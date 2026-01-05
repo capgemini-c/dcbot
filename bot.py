@@ -41,8 +41,24 @@ SKANDUOTES_FILE = os.path.join(os.path.dirname(__file__), "skanduotes.json")
 with open(SKANDUOTES_FILE, "r", encoding="utf-8") as f:
     SKANDUOTES = json.load(f)["skanduotes"]
 
-# Track which chants have been used (reset when all are used)
+# Track which items have been used (reset when all are used)
 used_skanduotes_indices = set()
+used_messages_indices = set()
+
+
+def get_random_message():
+    """Get a random message without repeating until all are used."""
+    global used_messages_indices
+    
+    if len(used_messages_indices) >= len(MESSAGES):
+        used_messages_indices = set()
+    
+    available = [i for i in range(len(MESSAGES)) if i not in used_messages_indices]
+    chosen = random.choice(available)
+    used_messages_indices.add(chosen)
+    
+    return MESSAGES[chosen]
+
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -56,7 +72,7 @@ async def send_daily_message():
     """Send a random message to the configured channel."""
     channel = bot.get_channel(CHANNEL_ID)
     if channel:
-        message = random.choice(MESSAGES)
+        message = get_random_message()
         await channel.send(message)
         print(f"Sent daily message: {message}")
     else:
@@ -100,7 +116,7 @@ async def on_message(message):
 @bot.tree.command(name="kasian", description="Paklausk Boto ka sian")
 async def kasian(interaction: discord.Interaction):
     """Slash command to trigger a random message."""
-    message = random.choice(MESSAGES)
+    message = get_random_message()
     await interaction.response.send_message(message)
 
 
@@ -140,7 +156,7 @@ async def rytas(interaction: discord.Interaction):
     lyrics = chant["lyrics"]
     
     # Discord has a 2000 char limit, so we might need to truncate
-    message = f"**🏀 {title}**\n\n{lyrics}"
+    message = f"**🏀 B TRIBŪNA STOJAMES ⛹️‍♂️**\n\n{lyrics}"
     if len(message) > 2000:
         message = message[:1997] + "..."
     
@@ -156,7 +172,7 @@ async def ping(ctx):
 @bot.command(name="test")
 async def test_message(ctx):
     """Manually trigger a random message (for testing)."""
-    message = random.choice(MESSAGES)
+    message = get_random_message()
     await ctx.send(message)
 
 
