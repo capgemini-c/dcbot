@@ -89,9 +89,3 @@ For 24/7 operation, consider:
 
 MIT
 
-# dcbot
-# dcbot
-# dcbot
-# dcbot
-# dcbot
-# dcbot
