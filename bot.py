@@ -60,6 +60,20 @@ def get_random_message():
     return MESSAGES[chosen]
 
 
+def get_random_skanduote():
+    """Get a random skanduote without repeating until all are used."""
+    global used_skanduotes_indices
+    
+    if len(used_skanduotes_indices) >= len(SKANDUOTES):
+        used_skanduotes_indices = set()
+    
+    available = [i for i in range(len(SKANDUOTES)) if i not in used_skanduotes_indices]
+    chosen = random.choice(available)
+    used_skanduotes_indices.add(chosen)
+    
+    return SKANDUOTES[chosen]
+
+
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
@@ -105,9 +119,19 @@ async def on_message(message):
     if message.author == bot.user:
         return
     
+    content_lower = message.content.lower()
+    
     # Respond to "jasna"
-    if "jasna" in message.content.lower():
+    if "jasna" in content_lower:
         await message.channel.send("toks ir draugelis...")
+    
+    # Respond to zalgiris mentions with a Rytas chant
+    if "zalgiris" in content_lower or "žalgiris" in content_lower or "green white boys" in content_lower:
+        chant = get_random_skanduote()
+        response = f"Poxuj tie agurkiniai, va biški ryto skanduočių ant prasiblaivymo, matau apsvaiges šūdus pezi:\n\n**🏀 B TRIBŪNA STOJAMES ⛹️‍♂️**\n\n{chant['lyrics']}"
+        if len(response) > 2000:
+            response = response[:1997] + "..."
+        await message.channel.send(response)
     
     # Process commands (so !ping etc still work)
     await bot.process_commands(message)
@@ -138,25 +162,10 @@ async def cs(interaction: discord.Interaction):
 @bot.tree.command(name="rytas", description="Gauti atsitiktinę Ryto skanduotę")
 async def rytas(interaction: discord.Interaction):
     """Slash command to get a random Rytas chant without repeating until all are used."""
-    global used_skanduotes_indices
-    
-    # Reset if all chants have been used
-    if len(used_skanduotes_indices) >= len(SKANDUOTES):
-        used_skanduotes_indices = set()
-    
-    # Get available indices (not yet used)
-    available_indices = [i for i in range(len(SKANDUOTES)) if i not in used_skanduotes_indices]
-    
-    # Pick a random one
-    chosen_index = random.choice(available_indices)
-    used_skanduotes_indices.add(chosen_index)
-    
-    chant = SKANDUOTES[chosen_index]
-    title = chant["title"]
-    lyrics = chant["lyrics"]
+    chant = get_random_skanduote()
     
     # Discord has a 2000 char limit, so we might need to truncate
-    message = f"**🏀 B TRIBŪNA STOJAMES ⛹️‍♂️**\n\n{lyrics}"
+    message = f"**🏀 B TRIBŪNA STOJAMES ⛹️‍♂️**\n\n{chant['lyrics']}"
     if len(message) > 2000:
         message = message[:1997] + "..."
     
