@@ -163,7 +163,6 @@ async def cs(interaction: discord.Interaction):
 async def rytas(interaction: discord.Interaction):
     """Slash command to get a random Rytas chant without repeating until all are used."""
     chant = get_random_skanduote()
-    
     # Discord has a 2000 char limit, so we might need to truncate
     message = f"**🏀 B TRIBŪNA STOJAMES ⛹️‍♂️**\n\n{chant['lyrics']}"
     if len(message) > 2000:
