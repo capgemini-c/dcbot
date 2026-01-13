@@ -167,21 +167,25 @@ PROXY_WORKS = test_proxy_connection()
 
 print("=" * 50, flush=True)
 
+# Playlist settings
+MAX_PLAYLIST_SONGS = 50  # Limit to prevent abuse
+
 YTDL_OPTIONS = {
-    'format': '251/250/249/140/139/bestaudio/best',  # Prefer opus/m4a audio formats
+    'format': 'bestaudio/best',  # Always get best available audio quality
     'extractaudio': True,
     'audioformat': 'mp3',
     'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s',
     'restrictfilenames': True,
-    'noplaylist': True,
+    'noplaylist': False,  # Enable playlist support
+    'playlistend': MAX_PLAYLIST_SONGS,  # Limit playlist size
     'nocheckcertificate': True,
-    'ignoreerrors': False,
+    'ignoreerrors': True,  # Skip unavailable videos in playlist
     'logtostderr': False,
     'quiet': False,
     'no_warnings': False,
     'default_search': 'ytsearch',
     'source_address': '0.0.0.0',
-    'extract_flat': False,
+    'extract_flat': 'in_playlist',  # Get playlist info without downloading each video
     'geo_bypass': True,
     'geo_bypass_country': 'SE',  # Sweden (matches proxy location)
 }
@@ -313,24 +317,59 @@ async def extract_spotify_query(url: str) -> Optional[str]:
     return None
 
 
-async def get_song_info(query: str, requester: str, timeout_seconds: int = 120) -> Optional[Song]:
+async def get_playlist_entries(query: str) -> List[dict]:
     """
-    Download audio from a URL or search query.
-    Supports YouTube, SoundCloud, and Spotify.
-    Downloads via proxy to avoid IP-locked URLs.
+    Extract playlist entries without downloading.
+    Returns list of video info dicts with 'url' and 'title'.
     """
     try:
         loop = asyncio.get_event_loop()
         
-        # Handle Spotify URLs - convert to YouTube search
-        if is_spotify_url(query):
-            search_query = await extract_spotify_query(query)
-            if search_query:
-                query = f"ytsearch:{search_query}"
-            else:
-                query = f"ytsearch:{query}"
+        # Use extract_flat to get playlist info quickly
+        extract_opts = YTDL_OPTIONS.copy()
+        extract_opts['extract_flat'] = True
+        extract_opts['quiet'] = True
         
-        print(f"🔄 Starting yt-dlp download for: {query[:60]}...", flush=True)
+        def do_extract():
+            with yt_dlp.YoutubeDL(extract_opts) as ydl:
+                return ydl.extract_info(query, download=False)
+        
+        data = await asyncio.wait_for(
+            loop.run_in_executor(None, do_extract),
+            timeout=30
+        )
+        
+        if not data:
+            return []
+        
+        # Check if it's a playlist
+        if 'entries' in data:
+            entries = []
+            for entry in data['entries'][:MAX_PLAYLIST_SONGS]:
+                if entry:
+                    entries.append({
+                        'url': entry.get('url') or entry.get('webpage_url') or f"https://youtube.com/watch?v={entry.get('id')}",
+                        'title': entry.get('title', 'Unknown'),
+                        'id': entry.get('id')
+                    })
+            return entries
+        else:
+            # Single video, not a playlist
+            return []
+    
+    except Exception as e:
+        print(f"❌ Error extracting playlist: {e}", flush=True)
+        return []
+
+
+async def download_song(url: str, requester: str, timeout_seconds: int = 120) -> Optional[Song]:
+    """
+    Download a single song from URL.
+    """
+    try:
+        loop = asyncio.get_event_loop()
+        
+        print(f"🔄 Downloading: {url[:50]}...", flush=True)
         start_time = asyncio.get_event_loop().time()
         
         # Create download options with unique output path
@@ -338,12 +377,14 @@ async def get_song_info(query: str, requester: str, timeout_seconds: int = 120) 
         file_id = str(uuid.uuid4())[:8]
         download_opts = YTDL_OPTIONS.copy()
         download_opts['outtmpl'] = os.path.join(AUDIO_CACHE_DIR, f'{file_id}-%(id)s.%(ext)s')
+        download_opts['extract_flat'] = False  # Actually download
+        download_opts['noplaylist'] = True  # Single video only
         
         # Download with timeout
         try:
             def do_download():
                 with yt_dlp.YoutubeDL(download_opts) as ydl:
-                    return ydl.extract_info(query, download=True)
+                    return ydl.extract_info(url, download=True)
             
             data = await asyncio.wait_for(
                 loop.run_in_executor(None, do_download),
@@ -351,11 +392,10 @@ async def get_song_info(query: str, requester: str, timeout_seconds: int = 120) 
             )
         except asyncio.TimeoutError:
             elapsed = asyncio.get_event_loop().time() - start_time
-            print(f"❌ yt-dlp timed out after {elapsed:.1f}s", flush=True)
+            print(f"❌ Download timed out after {elapsed:.1f}s", flush=True)
             return None
         
         elapsed = asyncio.get_event_loop().time() - start_time
-        print(f"✅ yt-dlp download completed in {elapsed:.1f}s", flush=True)
         
         if not data:
             return None
@@ -370,7 +410,6 @@ async def get_song_info(query: str, requester: str, timeout_seconds: int = 120) 
         video_id = data.get('id', 'unknown')
         local_file = None
         
-        # Look for the downloaded file in cache dir
         for f in os.listdir(AUDIO_CACHE_DIR):
             if f.startswith(file_id) and video_id in f:
                 local_file = os.path.join(AUDIO_CACHE_DIR, f)
@@ -381,11 +420,11 @@ async def get_song_info(query: str, requester: str, timeout_seconds: int = 120) 
             return None
         
         file_size = os.path.getsize(local_file) / (1024 * 1024)
-        print(f"📁 Downloaded: {os.path.basename(local_file)} ({file_size:.1f} MB)", flush=True)
+        print(f"📁 Downloaded: {data.get('title', 'Unknown')[:40]} ({file_size:.1f} MB, {elapsed:.1f}s)", flush=True)
         
         return Song(
             title=data.get('title', 'Unknown'),
-            url=data.get('webpage_url', query),
+            url=data.get('webpage_url', url),
             local_file=local_file,
             duration=data.get('duration'),
             thumbnail=data.get('thumbnail'),
@@ -393,10 +432,25 @@ async def get_song_info(query: str, requester: str, timeout_seconds: int = 120) 
         )
     
     except Exception as e:
-        print(f"❌ Error downloading song for '{query}': {type(e).__name__}: {e}", flush=True)
-        import traceback
-        traceback.print_exc()
+        print(f"❌ Error downloading: {type(e).__name__}: {e}", flush=True)
         return None
+
+
+async def get_song_info(query: str, requester: str, timeout_seconds: int = 120) -> Optional[Song]:
+    """
+    Download audio from a URL or search query.
+    Supports YouTube, SoundCloud, and Spotify.
+    For playlists, use get_playlist_entries() first.
+    """
+    # Handle Spotify URLs - convert to YouTube search
+    if is_spotify_url(query):
+        search_query = await extract_spotify_query(query)
+        if search_query:
+            query = f"ytsearch:{search_query}"
+        else:
+            query = f"ytsearch:{query}"
+    
+    return await download_song(query, requester, timeout_seconds)
 
 
 class MusicPlayer:
@@ -531,6 +585,80 @@ class MusicPlayer:
 players: dict[int, MusicPlayer] = {}
 
 
+class MusicControlView(discord.ui.View):
+    """Control buttons for music playback."""
+    
+    def __init__(self, bot: commands.Bot, guild_id: int):
+        super().__init__(timeout=None)  # Persistent buttons
+        self.bot = bot
+        self.guild_id = guild_id
+    
+    def get_player(self) -> Optional[MusicPlayer]:
+        return players.get(self.guild_id)
+    
+    @discord.ui.button(label="⏸️ Pause", style=discord.ButtonStyle.secondary, custom_id="music_pause")
+    async def pause_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        player = self.get_player()
+        if player and player.voice_client:
+            if player.voice_client.is_playing():
+                player.voice_client.pause()
+                button.label = "▶️ Resume"
+                await interaction.response.edit_message(view=self)
+            elif player.voice_client.is_paused():
+                player.voice_client.resume()
+                button.label = "⏸️ Pause"
+                await interaction.response.edit_message(view=self)
+            else:
+                await interaction.response.defer()
+        else:
+            await interaction.response.defer()
+    
+    @discord.ui.button(label="⏭️ Skip", style=discord.ButtonStyle.primary, custom_id="music_skip")
+    async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        player = self.get_player()
+        if player and player.skip():
+            await interaction.response.send_message("⏭️ Praleidžiama...", ephemeral=True, delete_after=3)
+        else:
+            await interaction.response.send_message("❌ Nėra ką praleisti", ephemeral=True, delete_after=3)
+    
+    @discord.ui.button(label="⏹️ Stop", style=discord.ButtonStyle.danger, custom_id="music_stop")
+    async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        player = self.get_player()
+        if player:
+            player.stop()
+            if player.voice_client:
+                await player.voice_client.disconnect()
+            await interaction.response.send_message("⏹️ Muzika sustabdyta", ephemeral=True, delete_after=3)
+        else:
+            await interaction.response.defer()
+    
+    @discord.ui.button(label="📋 Queue", style=discord.ButtonStyle.secondary, custom_id="music_queue")
+    async def queue_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        player = self.get_player()
+        if not player or player.queue.is_empty():
+            await interaction.response.send_message("📭 Eilė tuščia", ephemeral=True, delete_after=5)
+            return
+        
+        embed = discord.Embed(title="📋 Muzikos eilė", color=discord.Color.blue())
+        
+        if player.queue.current:
+            embed.add_field(
+                name="▶️ Dabar groja",
+                value=f"**{player.queue.current.title}** ({player.queue.current.duration_str})",
+                inline=False
+            )
+        
+        if player.queue.queue:
+            queue_text = ""
+            for i, song in enumerate(list(player.queue.queue)[:10], 1):
+                queue_text += f"{i}. {song.title} ({song.duration_str})\n"
+            if len(player.queue.queue) > 10:
+                queue_text += f"\n... ir dar {len(player.queue.queue) - 10} dainos"
+            embed.add_field(name="📋 Toliau eilėje", value=queue_text, inline=False)
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True, delete_after=30)
+
+
 def get_player(bot: commands.Bot, guild: discord.Guild) -> MusicPlayer:
     """Get or create a music player for a guild."""
     if guild.id not in players:
@@ -551,10 +679,10 @@ class Music(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
     
-    @app_commands.command(name="play", description="Paleisti dainą iš YouTube, SoundCloud arba Spotify")
+    @app_commands.command(name="play", description="Paleisti dainą arba playlist'ą iš YouTube, SoundCloud arba Spotify")
     @app_commands.describe(query="YouTube/SoundCloud/Spotify nuoroda arba paieškos užklausa")
     async def play(self, interaction: discord.Interaction, query: str):
-        """Play a song from YouTube, SoundCloud, or Spotify."""
+        """Play a song or playlist from YouTube, SoundCloud, or Spotify."""
         print(f"▶️ /play command received from {interaction.user.display_name}: {query}")
         
         # Check if user is in a voice channel
@@ -581,44 +709,83 @@ class Music(commands.Cog):
             await interaction.followup.send("❌ Nepavyko prisijungti prie voice kanalo!")
             return
         
-        print("✅ Connected to voice channel, now extracting song info...")
+        print("✅ Connected to voice channel, checking for playlist...")
         
-        # Get song info
-        song = await get_song_info(query, interaction.user.display_name)
-        if not song:
-            print("❌ Failed to get song info")
-            await interaction.followup.send("❌ Nepavyko rasti dainos. Patikrink nuorodą arba pabandyk kitą paiešką.")
-            return
+        # Check if it's a playlist
+        playlist_entries = await get_playlist_entries(query)
         
-        print(f"🎵 Got song: {song.title} ({song.duration_str})")
-        
-        # Add to queue
-        player.queue.add(song)
-        print(f"📋 Added to queue. Queue length: {len(player.queue)}")
-        
-        # Create embed
-        embed = discord.Embed(
-            title="🎵 Pridėta į eilę",
-            description=f"**[{song.title}]({song.url})**",
-            color=discord.Color.green()
-        )
-        embed.add_field(name="Trukmė", value=song.duration_str, inline=True)
-        embed.add_field(name="Eilėje", value=str(len(player.queue)), inline=True)
-        embed.add_field(name="Užsakė", value=song.requester, inline=True)
-        
-        if song.thumbnail:
-            embed.set_thumbnail(url=song.thumbnail)
-        
-        await interaction.followup.send(embed=embed)
-        print("📤 Sent embed response")
-        
-        # Start playing if not already
-        print(f"🔍 Checking if should start playing: is_playing={player.voice_client.is_playing() if player.voice_client else 'no client'}, task={player._player_task}")
-        if not player.voice_client.is_playing() and (player._player_task is None or player._player_task.done()):
-            print("🎬 Starting player loop...")
-            player._player_task = asyncio.create_task(player.start_player_loop())
+        if playlist_entries:
+            # It's a playlist
+            print(f"📋 Found playlist with {len(playlist_entries)} songs")
+            
+            # Send initial message
+            embed = discord.Embed(
+                title="📋 Playlist aptiktas!",
+                description=f"Kraunama **{len(playlist_entries)}** dainos...\n(Max: {MAX_PLAYLIST_SONGS})",
+                color=discord.Color.blue()
+            )
+            view = MusicControlView(self.bot, interaction.guild.id)
+            await interaction.followup.send(embed=embed, view=view)
+            
+            # Download and queue each song
+            added_count = 0
+            for i, entry in enumerate(playlist_entries):
+                song = await download_song(entry['url'], interaction.user.display_name, timeout_seconds=90)
+                if song:
+                    player.queue.add(song)
+                    added_count += 1
+                    print(f"📋 Playlist [{i+1}/{len(playlist_entries)}]: {song.title}")
+                    
+                    # Start playing on first song
+                    if added_count == 1 and not player.voice_client.is_playing() and (player._player_task is None or player._player_task.done()):
+                        player._player_task = asyncio.create_task(player.start_player_loop())
+            
+            # Update message with final count
+            final_embed = discord.Embed(
+                title="✅ Playlist įkeltas!",
+                description=f"Pridėta **{added_count}** dainų į eilę",
+                color=discord.Color.green()
+            )
+            await interaction.edit_original_response(embed=final_embed, view=view)
         else:
-            print("⏸️ Player already running, song queued")
+            # Single song
+            print("🎵 Single song, downloading...")
+            song = await get_song_info(query, interaction.user.display_name)
+            if not song:
+                print("❌ Failed to get song info")
+                await interaction.followup.send("❌ Nepavyko rasti dainos. Patikrink nuorodą arba pabandyk kitą paiešką.")
+                return
+            
+            print(f"🎵 Got song: {song.title} ({song.duration_str})")
+            
+            # Add to queue
+            player.queue.add(song)
+            print(f"📋 Added to queue. Queue length: {len(player.queue)}")
+            
+            # Create embed with control buttons
+            embed = discord.Embed(
+                title="🎵 Pridėta į eilę",
+                description=f"**[{song.title}]({song.url})**",
+                color=discord.Color.green()
+            )
+            embed.add_field(name="Trukmė", value=song.duration_str, inline=True)
+            embed.add_field(name="Eilėje", value=str(len(player.queue)), inline=True)
+            embed.add_field(name="Užsakė", value=song.requester, inline=True)
+            
+            if song.thumbnail:
+                embed.set_thumbnail(url=song.thumbnail)
+            
+            view = MusicControlView(self.bot, interaction.guild.id)
+            await interaction.followup.send(embed=embed, view=view)
+            print("📤 Sent embed response with controls")
+            
+            # Start playing if not already
+            print(f"🔍 Checking if should start playing: is_playing={player.voice_client.is_playing() if player.voice_client else 'no client'}, task={player._player_task}")
+            if not player.voice_client.is_playing() and (player._player_task is None or player._player_task.done()):
+                print("🎬 Starting player loop...")
+                player._player_task = asyncio.create_task(player.start_player_loop())
+            else:
+                print("⏸️ Player already running, song queued")
     
     @app_commands.command(name="testplay", description="Test command - plays Rick Astley")
     async def testplay(self, interaction: discord.Interaction):
