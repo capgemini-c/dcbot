@@ -3,11 +3,13 @@ FROM python:3.12-slim
 # Force unbuffered Python output (shows logs immediately)
 ENV PYTHONUNBUFFERED=1
 
-# Install FFmpeg and libopus (required for Discord voice)
+# Install FFmpeg, libopus, and libsodium (required for Discord voice)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libopus0 \
     libopus-dev \
+    libsodium23 \
+    libsodium-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
