@@ -131,6 +131,29 @@ else:
     print("🔓 PROXY DISABLED - Direct connection", flush=True)
 print("=" * 50, flush=True)
 
+# Test connectivity to YouTube and SoundCloud
+print("=" * 50, flush=True)
+print("🌐 CONNECTIVITY TEST", flush=True)
+print("=" * 50, flush=True)
+
+def test_url_direct(url: str, name: str) -> bool:
+    """Test if a URL is reachable (direct connection)."""
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=10) as response:
+            status = response.status
+            print(f"   ✅ {name}: HTTP {status}", flush=True)
+            return True
+    except Exception as e:
+        print(f"   ❌ {name}: {type(e).__name__}", flush=True)
+        return False
+
+test_url_direct("https://www.youtube.com", "YouTube")
+test_url_direct("https://soundcloud.com", "SoundCloud")
+test_url_direct("https://api.nordvpn.com/v1/servers", "NordVPN API")
+
+print("=" * 50, flush=True)
+
 YTDL_OPTIONS = {
     'format': 'bestaudio/best',
     'extractaudio': True,
