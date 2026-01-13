@@ -24,6 +24,40 @@ except OSError:
     except OSError as e:
         print(f"⚠️ Could not load opus: {e}", flush=True)
 
+# Check FFmpeg and Deno
+import subprocess
+print("=" * 50, flush=True)
+print("🎬 SYSTEM DEPENDENCIES", flush=True)
+print("=" * 50, flush=True)
+
+# FFmpeg
+try:
+    result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True, timeout=5)
+    if result.returncode == 0:
+        version_line = result.stdout.split('\n')[0]
+        print(f"✅ FFmpeg: {version_line.replace('ffmpeg version ', '')[:40]}", flush=True)
+    else:
+        print("❌ FFmpeg: not working", flush=True)
+except FileNotFoundError:
+    print("❌ FFmpeg: NOT INSTALLED", flush=True)
+except Exception as e:
+    print(f"❌ FFmpeg: {e}", flush=True)
+
+# Deno (for YouTube JS challenges)
+try:
+    result = subprocess.run(['deno', '--version'], capture_output=True, text=True, timeout=5)
+    if result.returncode == 0:
+        version = result.stdout.split('\n')[0]
+        print(f"✅ Deno: {version}", flush=True)
+    else:
+        print("⚠️ Deno: not working (YouTube may have limited formats)", flush=True)
+except FileNotFoundError:
+    print("⚠️ Deno: not installed (YouTube may have limited formats)", flush=True)
+except Exception as e:
+    print(f"⚠️ Deno: {e}", flush=True)
+
+print("=" * 50, flush=True)
+
 # Check PyNaCl/libsodium status
 print("=" * 50, flush=True)
 print("🔐 ENCRYPTION STATUS", flush=True)
