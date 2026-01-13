@@ -677,26 +677,37 @@ class MusicControlView(discord.ui.View):
     @discord.ui.button(label="📋 Queue", style=discord.ButtonStyle.secondary, custom_id="music_queue")
     async def queue_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         player = self.get_player()
-        if not player or player.queue.is_empty():
-            await interaction.response.send_message("📭 Eilė tuščia", ephemeral=True, delete_after=5)
-            return
         
         embed = discord.Embed(title="📋 Muzikos eilė", color=discord.Color.blue())
         
+        if not player:
+            await interaction.response.send_message("📭 Nėra aktyvaus grotuvo", ephemeral=True, delete_after=5)
+            return
+        
+        # Current song
         if player.queue.current:
             embed.add_field(
                 name="▶️ Dabar groja",
                 value=f"**{player.queue.current.title}** ({player.queue.current.duration_str})",
                 inline=False
             )
+        else:
+            embed.add_field(
+                name="▶️ Dabar groja",
+                value="Niekas",
+                inline=False
+            )
         
+        # Queue
         if player.queue.queue:
             queue_text = ""
             for i, song in enumerate(list(player.queue.queue)[:10], 1):
                 queue_text += f"{i}. {song.title} ({song.duration_str})\n"
             if len(player.queue.queue) > 10:
                 queue_text += f"\n... ir dar {len(player.queue.queue) - 10} dainos"
-            embed.add_field(name="📋 Toliau eilėje", value=queue_text, inline=False)
+            embed.add_field(name=f"📋 Eilėje ({len(player.queue.queue)} dainos)", value=queue_text, inline=False)
+        else:
+            embed.add_field(name="📋 Eilėje", value="Tuščia (dainos gali dar krautis)", inline=False)
         
         await interaction.response.send_message(embed=embed, ephemeral=True, delete_after=30)
 
@@ -757,60 +768,37 @@ class Music(commands.Cog):
         playlist_entries = await get_playlist_entries(query)
         
         if playlist_entries:
-            # It's a playlist
+            # It's a playlist - download in background
             print(f"📋 Found playlist with {len(playlist_entries)} songs", flush=True)
             
-            # Send initial message
-            embed = discord.Embed(
-                title="📋 Playlist aptiktas!",
-                description=f"Kraunama **{len(playlist_entries)}** dainos...\n(Max: {MAX_PLAYLIST_SONGS})",
-                color=discord.Color.blue()
-            )
-            view = MusicControlView(self.bot, interaction.guild.id)
-            message = await interaction.followup.send(embed=embed, view=view)
-            
-            # Download and queue each song
-            added_count = 0
+            # Download and queue each song (no status messages)
             for i, entry in enumerate(playlist_entries):
                 song = await download_song(entry['url'], interaction.user.display_name, timeout_seconds=90)
                 if song:
                     player.queue.add(song)
-                    added_count += 1
                     print(f"📋 Playlist [{i+1}/{len(playlist_entries)}]: {song.title}", flush=True)
                     
-                    # Start playing on first song
-                    if added_count == 1:
+                    # Start playing on first song and show its info
+                    if i == 0:
+                        # Start player
                         if not player.voice_client.is_playing() and (player._player_task is None or player._player_task.done()):
                             player._player_task = asyncio.create_task(player.start_player_loop())
                         
-                        # Update message to show now playing
-                        playing_embed = discord.Embed(
-                            title="🎵 Playlist groja!",
-                            description=f"**Dabar groja:** {song.title}\n\nKraunama likusių dainų... ({added_count}/{len(playlist_entries)})",
+                        # Show first song info (same format as single song)
+                        embed = discord.Embed(
+                            title="🎵 Pridėta į eilę",
+                            description=f"**[{song.title}]({song.url})**",
                             color=discord.Color.green()
                         )
+                        embed.add_field(name="Trukmė", value=song.duration_str, inline=True)
+                        embed.add_field(name="Eilėje", value=f"{len(playlist_entries)} dainos", inline=True)
+                        embed.add_field(name="Užsakė", value=song.requester, inline=True)
+                        
                         if song.thumbnail:
-                            playing_embed.set_thumbnail(url=song.thumbnail)
-                        await message.edit(embed=playing_embed, view=view)
-                    
-                    # Update progress every 5 songs
-                    elif added_count % 5 == 0:
-                        progress_embed = discord.Embed(
-                            title="🎵 Playlist groja!",
-                            description=f"**Dabar groja:** {player.queue.current.title if player.queue.current else 'Kraunama...'}\n\nIkrauta: {added_count}/{len(playlist_entries)} dainų",
-                            color=discord.Color.blue()
-                        )
-                        await message.edit(embed=progress_embed, view=view)
-            
-            # Update message with final count
-            final_embed = discord.Embed(
-                title="✅ Playlist įkeltas!",
-                description=f"**Dabar groja:** {player.queue.current.title if player.queue.current else 'Niekas'}\n\nPridėta **{added_count}** dainų į eilę",
-                color=discord.Color.green()
-            )
-            if player.queue.current and player.queue.current.thumbnail:
-                final_embed.set_thumbnail(url=player.queue.current.thumbnail)
-            await message.edit(embed=final_embed, view=view)
+                            embed.set_thumbnail(url=song.thumbnail)
+                        
+                        view = MusicControlView(self.bot, interaction.guild.id)
+                        await interaction.followup.send(embed=embed, view=view)
         else:
             # Single song
             print("🎵 Single song, downloading...")
