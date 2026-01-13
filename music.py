@@ -814,7 +814,7 @@ class Music(commands.Cog):
             # Set playlist tracking info
             player.playlist_info = {'total': len(playlist_entries), 'downloaded': 0}
             
-            BATCH_SIZE = 10
+            BATCH_SIZE = 3
             
             # Download and queue in batches of 10
             for batch_start in range(0, len(playlist_entries), BATCH_SIZE):
