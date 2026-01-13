@@ -8,7 +8,7 @@ import random
 import re
 from collections import deque
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, List
 import discord
 from discord import app_commands
 from discord.ext import commands
