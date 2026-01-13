@@ -808,41 +808,49 @@ class Music(commands.Cog):
         playlist_entries = await get_playlist_entries(query)
         
         if playlist_entries:
-            # It's a playlist - download in background
+            # It's a playlist - download in batches
             print(f"📋 Found playlist with {len(playlist_entries)} songs", flush=True)
             
             # Set playlist tracking info
             player.playlist_info = {'total': len(playlist_entries), 'downloaded': 0}
             
-            # Download and queue each song (no status messages)
-            for i, entry in enumerate(playlist_entries):
-                song = await download_song(entry['url'], interaction.user.display_name, timeout_seconds=90)
-                if song:
-                    player.queue.add(song)
-                    player.playlist_info['downloaded'] += 1
-                    print(f"📋 Playlist [{i+1}/{len(playlist_entries)}]: {song.title}", flush=True)
-                    
-                    # Start playing on first song and show its info
-                    if i == 0:
-                        # Start player
-                        if not player.voice_client.is_playing() and (player._player_task is None or player._player_task.done()):
-                            player._player_task = asyncio.create_task(player.start_player_loop())
+            BATCH_SIZE = 10
+            
+            # Download and queue in batches of 10
+            for batch_start in range(0, len(playlist_entries), BATCH_SIZE):
+                batch_end = min(batch_start + BATCH_SIZE, len(playlist_entries))
+                batch = playlist_entries[batch_start:batch_end]
+                
+                print(f"📦 Downloading batch {batch_start//BATCH_SIZE + 1} ({batch_start+1}-{batch_end}/{len(playlist_entries)})", flush=True)
+                
+                for i, entry in enumerate(batch, start=batch_start):
+                    song = await download_song(entry['url'], interaction.user.display_name, timeout_seconds=90)
+                    if song:
+                        player.queue.add(song)
+                        player.playlist_info['downloaded'] += 1
+                        print(f"📋 Playlist [{i+1}/{len(playlist_entries)}]: {song.title}", flush=True)
                         
-                        # Show first song info (same format as single song)
-                        embed = discord.Embed(
-                            title="🎵 Pridėta į eilę",
-                            description=f"**[{song.title}]({song.url})**",
-                            color=discord.Color.green()
-                        )
-                        embed.add_field(name="Trukmė", value=song.duration_str, inline=True)
-                        embed.add_field(name="Eilėje", value=f"{len(playlist_entries)} dainos", inline=True)
-                        embed.add_field(name="Užsakė", value=song.requester, inline=True)
-                        
-                        if song.thumbnail:
-                            embed.set_thumbnail(url=song.thumbnail)
-                        
-                        view = MusicControlView(self.bot, interaction.guild.id)
-                        player.now_playing_message = await interaction.followup.send(embed=embed, view=view)
+                        # Start playing on first song and show its info
+                        if i == 0:
+                            # Start player
+                            if not player.voice_client.is_playing() and (player._player_task is None or player._player_task.done()):
+                                player._player_task = asyncio.create_task(player.start_player_loop())
+                            
+                            # Show first song info (same format as single song)
+                            embed = discord.Embed(
+                                title="🎵 Pridėta į eilę",
+                                description=f"**[{song.title}]({song.url})**",
+                                color=discord.Color.green()
+                            )
+                            embed.add_field(name="Trukmė", value=song.duration_str, inline=True)
+                            embed.add_field(name="Eilėje", value=f"{len(playlist_entries)} dainos", inline=True)
+                            embed.add_field(name="Užsakė", value=song.requester, inline=True)
+                            
+                            if song.thumbnail:
+                                embed.set_thumbnail(url=song.thumbnail)
+                            
+                            view = MusicControlView(self.bot, interaction.guild.id)
+                            player.now_playing_message = await interaction.followup.send(embed=embed, view=view)
             
             # Reset playlist tracking when done
             player.playlist_info = {'total': 0, 'downloaded': 0}
