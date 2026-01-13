@@ -53,82 +53,22 @@ import json as json_lib
 # ============================================
 # NordVPN SOCKS5 Proxy Configuration
 # ============================================
+# NordVPN SOCKS5 Proxy Configuration
+# ============================================
 print("=" * 50, flush=True)
-print("🔧 NORDVPN PROXY CONFIGURATION", flush=True)
+print("🔧 NORDVPN SOCKS5 PROXY", flush=True)
 print("=" * 50, flush=True)
 
 NORDVPN_USER = os.getenv('NORDVPN_USER')
 NORDVPN_PASS = os.getenv('NORDVPN_PASS')
+NORDVPN_SERVER = "se.socks.nordhold.net"  # NordVPN SOCKS5 server (Sweden)
 
 if NORDVPN_USER and NORDVPN_PASS:
-    print("✅ Credentials configured", flush=True)
-elif NORDVPN_USER:
-    print("✅ NORDVPN_USER set", flush=True)
-    print("❌ NORDVPN_PASS missing!", flush=True)
+    print(f"🔒 PROXY ENABLED", flush=True)
+    print(f"   Server: {NORDVPN_SERVER}:1080", flush=True)
 else:
-    print("⚠️  NORDVPN_USER not set - proxy disabled", flush=True)
-    print("   YouTube may not work from cloud servers!", flush=True)
-
-# Allowed countries: Denmark, Sweden, Germany, Poland
-NORDVPN_COUNTRIES = {
-    'DK': (58, '🇩🇰 Denmark'),
-    'SE': (208, '🇸🇪 Sweden'),
-    'DE': (81, '🇩🇪 Germany'),
-    'PL': (174, '🇵🇱 Poland'),
-}
-
-def get_nordvpn_server() -> str:
-    """Fetch best NordVPN server from DK/SE/DE/PL. All servers support SOCKS5."""
-    print("-" * 50, flush=True)
-    print("🔍 Searching for NordVPN server...", flush=True)
-    print("   Allowed regions: DK, SE, DE, PL", flush=True)
-    
-    # Pick a random country from allowed list
-    countries = list(NORDVPN_COUNTRIES.items())
-    random.shuffle(countries)
-    print(f"   Trying order: {[c[0] for c in countries]}", flush=True)
-    
-    for country_code, (country_id, country_name) in countries:
-        try:
-            print(f"   → Querying {country_name}...", flush=True)
-            # Get recommended servers (all NordVPN servers support SOCKS5 on port 1080)
-            url = f'https://api.nordvpn.com/v1/servers/recommendations?filters[country_id]={country_id}&limit=1'
-            with urllib.request.urlopen(url, timeout=10) as response:
-                servers = json_lib.loads(response.read().decode())
-                if servers:
-                    hostname = servers[0]['hostname']
-                    load = servers[0].get('load', 'N/A')
-                    print(f"   ✅ Found: {hostname}", flush=True)
-                    print(f"      Country: {country_name}", flush=True)
-                    print(f"      Load: {load}%", flush=True)
-                    return hostname
-                else:
-                    print(f"   ⚠️  No servers available in {country_name}", flush=True)
-        except Exception as e:
-            print(f"   ❌ Failed for {country_name}: {e}", flush=True)
-            continue
-    
-    # Real fallback servers
-    fallbacks = ['de1047.nordvpn.com', 'se512.nordvpn.com', 'pl245.nordvpn.com', 'dk95.nordvpn.com']
-    fallback = random.choice(fallbacks)
-    print(f"   ⚠️  All countries failed, using fallback: {fallback}", flush=True)
-    return fallback
-
-NORDVPN_SERVER = None
-if NORDVPN_USER:
-    if os.getenv('NORDVPN_SERVER'):
-        NORDVPN_SERVER = os.getenv('NORDVPN_SERVER')
-        print(f"   Using manual server: {NORDVPN_SERVER}", flush=True)
-    else:
-        NORDVPN_SERVER = get_nordvpn_server()
-
-print("-" * 50, flush=True)
-if NORDVPN_SERVER and NORDVPN_USER and NORDVPN_PASS:
-    print("🔒 PROXY ENABLED", flush=True)
-    print(f"   Server: {NORDVPN_SERVER}", flush=True)
-    print("   Port: 1080 (SOCKS5)", flush=True)
-else:
-    print("🔓 PROXY DISABLED - Direct connection", flush=True)
+    print("🔓 PROXY DISABLED", flush=True)
+    print("   Set NORDVPN_USER + NORDVPN_PASS for YouTube support", flush=True)
 print("=" * 50, flush=True)
 
 # Test connectivity to YouTube and SoundCloud
@@ -155,7 +95,7 @@ test_url_direct("https://api.nordvpn.com/v1/servers", "NordVPN API")
 print("=" * 50, flush=True)
 
 YTDL_OPTIONS = {
-    'format': 'bestaudio/best',
+    'format': '251/250/249/140/139/bestaudio/best',  # Prefer opus/m4a audio formats
     'extractaudio': True,
     'audioformat': 'mp3',
     'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s',
@@ -170,8 +110,7 @@ YTDL_OPTIONS = {
     'source_address': '0.0.0.0',
     'extract_flat': False,
     'geo_bypass': True,
-    'geo_bypass_country': 'US',
-    'extractor_args': {'youtube': {'player_client': ['ios', 'mweb']}},
+    'geo_bypass_country': 'SE',  # Sweden (matches proxy location)
 }
 
 # Add proxy if NordVPN credentials are set

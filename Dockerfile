@@ -3,7 +3,7 @@ FROM python:3.12-slim
 # Force unbuffered Python output (shows logs immediately)
 ENV PYTHONUNBUFFERED=1
 
-# Install FFmpeg, libopus, libsodium, and build tools
+# Install FFmpeg, libopus, libsodium, build tools, and curl for Deno
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libopus0 \
@@ -12,7 +12,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libsodium-dev \
     build-essential \
     libffi-dev \
+    curl \
+    unzip \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Deno (required by yt-dlp for YouTube extraction)
+RUN curl -fsSL https://deno.land/install.sh | sh
+ENV DENO_INSTALL="/root/.deno"
+ENV PATH="$DENO_INSTALL/bin:$PATH"
 
 WORKDIR /app
 
