@@ -105,7 +105,7 @@ else:
     print("   Set NORDVPN_USER + NORDVPN_PASS for YouTube support", flush=True)
 print("=" * 50, flush=True)
 
-# Test connectivity to YouTube and SoundCloud
+# Test connectivity
 print("=" * 50, flush=True)
 print("🌐 CONNECTIVITY TEST", flush=True)
 print("=" * 50, flush=True)
@@ -116,15 +116,54 @@ def test_url_direct(url: str, name: str) -> bool:
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req, timeout=10) as response:
             status = response.status
-            print(f"   ✅ {name}: HTTP {status}", flush=True)
+            print(f"   ✅ {name} (direct): HTTP {status}", flush=True)
             return True
     except Exception as e:
-        print(f"   ❌ {name}: {type(e).__name__}", flush=True)
+        print(f"   ❌ {name} (direct): {type(e).__name__}", flush=True)
         return False
 
+def test_proxy_connection() -> bool:
+    """Test if we can connect through the SOCKS5 proxy."""
+    if not NORDVPN_USER or not NORDVPN_PASS:
+        print("   ⏭️ Proxy test skipped (no credentials)", flush=True)
+        return False
+    
+    import socket
+    import socks  # PySocks
+    
+    try:
+        print(f"   🔌 Testing SOCKS5 to {NORDVPN_SERVER}:1080...", flush=True)
+        
+        # Create a SOCKS5 socket
+        s = socks.socksocket()
+        s.set_proxy(socks.SOCKS5, NORDVPN_SERVER, 1080, True, NORDVPN_USER, NORDVPN_PASS)
+        s.settimeout(15)
+        
+        # Try to connect to YouTube through the proxy
+        s.connect(("www.youtube.com", 443))
+        s.close()
+        
+        print(f"   ✅ Proxy: Connected to YouTube via {NORDVPN_SERVER}", flush=True)
+        return True
+    except socks.ProxyConnectionError as e:
+        print(f"   ❌ Proxy auth failed: {e}", flush=True)
+        return False
+    except socks.SOCKS5Error as e:
+        print(f"   ❌ SOCKS5 error: {e}", flush=True)
+        return False
+    except socket.timeout:
+        print(f"   ❌ Proxy timeout - server may be unreachable from this network", flush=True)
+        return False
+    except Exception as e:
+        print(f"   ❌ Proxy test failed: {type(e).__name__}: {e}", flush=True)
+        return False
+
+print("Direct connections:", flush=True)
 test_url_direct("https://www.youtube.com", "YouTube")
 test_url_direct("https://soundcloud.com", "SoundCloud")
-test_url_direct("https://api.nordvpn.com/v1/servers", "NordVPN API")
+
+print("\nProxy connection:", flush=True)
+PROXY_WORKS = test_proxy_connection()
 
 print("=" * 50, flush=True)
 
@@ -260,7 +299,7 @@ async def extract_spotify_query(url: str) -> Optional[str]:
     return None
 
 
-async def get_song_info(query: str, requester: str) -> Optional[Song]:
+async def get_song_info(query: str, requester: str, timeout_seconds: int = 60) -> Optional[Song]:
     """
     Extract song information from a URL or search query.
     Supports YouTube, SoundCloud, and Spotify.
@@ -277,11 +316,25 @@ async def get_song_info(query: str, requester: str) -> Optional[Song]:
                 # If we couldn't extract, try searching by the original URL text
                 query = f"ytsearch:{query}"
         
-        # Extract info
-        data = await loop.run_in_executor(
-            None,
-            lambda: ytdl.extract_info(query, download=False)
-        )
+        print(f"🔄 Starting yt-dlp extraction for: {query[:60]}...", flush=True)
+        start_time = asyncio.get_event_loop().time()
+        
+        # Extract info with timeout
+        try:
+            data = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    lambda: ytdl.extract_info(query, download=False)
+                ),
+                timeout=timeout_seconds
+            )
+        except asyncio.TimeoutError:
+            elapsed = asyncio.get_event_loop().time() - start_time
+            print(f"❌ yt-dlp timed out after {elapsed:.1f}s - proxy may be blocked or slow", flush=True)
+            return None
+        
+        elapsed = asyncio.get_event_loop().time() - start_time
+        print(f"✅ yt-dlp extraction completed in {elapsed:.1f}s", flush=True)
         
         if not data:
             return None
