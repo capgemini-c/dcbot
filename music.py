@@ -261,9 +261,25 @@ class MusicQueue:
         self.current = None
         return None
     
+    def skip_to(self, position: int) -> bool:
+        """Skip to a specific position in queue (1-indexed). Returns True if successful."""
+        if position < 1 or position > len(self.queue):
+            return False
+        
+        # Remove songs before the target position
+        for _ in range(position - 1):
+            if self.queue:
+                song = self.queue.popleft()
+                song.cleanup()  # Delete files we're skipping
+        
+        return True
+    
     def clear(self):
         self.queue.clear()
         self.current = None
+    
+    def is_empty(self) -> bool:
+        return len(self.queue) == 0
     
     def __len__(self):
         return len(self.queue)
@@ -742,7 +758,7 @@ class Music(commands.Cog):
         
         if playlist_entries:
             # It's a playlist
-            print(f"📋 Found playlist with {len(playlist_entries)} songs")
+            print(f"📋 Found playlist with {len(playlist_entries)} songs", flush=True)
             
             # Send initial message
             embed = discord.Embed(
@@ -751,7 +767,7 @@ class Music(commands.Cog):
                 color=discord.Color.blue()
             )
             view = MusicControlView(self.bot, interaction.guild.id)
-            await interaction.followup.send(embed=embed, view=view)
+            message = await interaction.followup.send(embed=embed, view=view)
             
             # Download and queue each song
             added_count = 0
@@ -760,19 +776,41 @@ class Music(commands.Cog):
                 if song:
                     player.queue.add(song)
                     added_count += 1
-                    print(f"📋 Playlist [{i+1}/{len(playlist_entries)}]: {song.title}")
+                    print(f"📋 Playlist [{i+1}/{len(playlist_entries)}]: {song.title}", flush=True)
                     
                     # Start playing on first song
-                    if added_count == 1 and not player.voice_client.is_playing() and (player._player_task is None or player._player_task.done()):
-                        player._player_task = asyncio.create_task(player.start_player_loop())
+                    if added_count == 1:
+                        if not player.voice_client.is_playing() and (player._player_task is None or player._player_task.done()):
+                            player._player_task = asyncio.create_task(player.start_player_loop())
+                        
+                        # Update message to show now playing
+                        playing_embed = discord.Embed(
+                            title="🎵 Playlist groja!",
+                            description=f"**Dabar groja:** {song.title}\n\nKraunama likusių dainų... ({added_count}/{len(playlist_entries)})",
+                            color=discord.Color.green()
+                        )
+                        if song.thumbnail:
+                            playing_embed.set_thumbnail(url=song.thumbnail)
+                        await message.edit(embed=playing_embed, view=view)
+                    
+                    # Update progress every 5 songs
+                    elif added_count % 5 == 0:
+                        progress_embed = discord.Embed(
+                            title="🎵 Playlist groja!",
+                            description=f"**Dabar groja:** {player.queue.current.title if player.queue.current else 'Kraunama...'}\n\nIkrauta: {added_count}/{len(playlist_entries)} dainų",
+                            color=discord.Color.blue()
+                        )
+                        await message.edit(embed=progress_embed, view=view)
             
             # Update message with final count
             final_embed = discord.Embed(
                 title="✅ Playlist įkeltas!",
-                description=f"Pridėta **{added_count}** dainų į eilę",
+                description=f"**Dabar groja:** {player.queue.current.title if player.queue.current else 'Niekas'}\n\nPridėta **{added_count}** dainų į eilę",
                 color=discord.Color.green()
             )
-            await interaction.edit_original_response(embed=final_embed, view=view)
+            if player.queue.current and player.queue.current.thumbnail:
+                final_embed.set_thumbnail(url=player.queue.current.thumbnail)
+            await message.edit(embed=final_embed, view=view)
         else:
             # Single song
             print("🎵 Single song, downloading...")
@@ -922,6 +960,57 @@ class Music(commands.Cog):
             embed.add_field(name="Eilė", value="Tuščia", inline=False)
         
         await interaction.response.send_message(embed=embed)
+    
+    @app_commands.command(name="skipto", description="Peršokti į konkrečią dainą eilėje")
+    @app_commands.describe(position="Dainos numeris eilėje (1, 2, 3...)")
+    async def skipto(self, interaction: discord.Interaction, position: int):
+        """Skip to a specific position in the queue."""
+        player = players.get(interaction.guild.id)
+        
+        if not player or not player.voice_client:
+            await interaction.response.send_message(
+                "❌ Botas nėra prijungtas prie voice kanalo!",
+                ephemeral=True
+            )
+            return
+        
+        if position < 1:
+            await interaction.response.send_message(
+                "❌ Pozicija turi būti 1 arba daugiau!",
+                ephemeral=True
+            )
+            return
+        
+        if position > len(player.queue):
+            await interaction.response.send_message(
+                f"❌ Eilėje yra tik {len(player.queue)} dainų!",
+                ephemeral=True
+            )
+            return
+        
+        # Skip to position
+        if player.queue.skip_to(position):
+            # Stop current song to trigger next
+            if player.voice_client.is_playing():
+                player.voice_client.stop()
+            
+            target_song = player.queue.queue[0] if player.queue.queue else None
+            
+            embed = discord.Embed(
+                title="⏩ Peršokta",
+                description=f"Peršokta į poziciją **#{position}**",
+                color=discord.Color.blue()
+            )
+            
+            if target_song:
+                embed.add_field(name="Kita daina", value=target_song.title, inline=False)
+            
+            await interaction.response.send_message(embed=embed)
+        else:
+            await interaction.response.send_message(
+                "❌ Nepavyko peršokti į šią poziciją!",
+                ephemeral=True
+            )
     
     @app_commands.command(name="queue", description="Rodyti dainų eilę")
     async def queue_cmd(self, interaction: discord.Interaction):
