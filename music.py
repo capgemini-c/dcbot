@@ -317,34 +317,58 @@ async def extract_spotify_query(url: str) -> Optional[str]:
     return None
 
 
+def is_playlist_url(url: str) -> bool:
+    """Check if URL contains a playlist."""
+    return 'list=' in url or '/playlist?' in url
+
+
 async def get_playlist_entries(query: str) -> List[dict]:
     """
     Extract playlist entries without downloading.
     Returns list of video info dicts with 'url' and 'title'.
     """
+    # Only process if it looks like a playlist URL
+    if not is_playlist_url(query):
+        return []
+    
     try:
         loop = asyncio.get_event_loop()
+        
+        # Convert watch?v=X&list=Y to playlist URL for proper extraction
+        if 'list=' in query and 'watch?' in query:
+            import re
+            list_match = re.search(r'list=([a-zA-Z0-9_-]+)', query)
+            if list_match:
+                playlist_id = list_match.group(1)
+                query = f"https://www.youtube.com/playlist?list={playlist_id}"
+                print(f"📋 Converted to playlist URL: {query}", flush=True)
         
         # Use extract_flat to get playlist info quickly
         extract_opts = YTDL_OPTIONS.copy()
         extract_opts['extract_flat'] = True
         extract_opts['quiet'] = True
+        extract_opts['noplaylist'] = False  # Force playlist mode
         
         def do_extract():
             with yt_dlp.YoutubeDL(extract_opts) as ydl:
                 return ydl.extract_info(query, download=False)
         
+        print(f"📋 Extracting playlist info...", flush=True)
         data = await asyncio.wait_for(
             loop.run_in_executor(None, do_extract),
-            timeout=30
+            timeout=60
         )
         
         if not data:
+            print(f"❌ No data returned from playlist extraction", flush=True)
             return []
         
         # Check if it's a playlist
         if 'entries' in data:
             entries = []
+            playlist_title = data.get('title', 'Unknown Playlist')
+            print(f"📋 Found playlist: {playlist_title} ({len(data['entries'])} videos)", flush=True)
+            
             for entry in data['entries'][:MAX_PLAYLIST_SONGS]:
                 if entry:
                     entries.append({
@@ -354,11 +378,13 @@ async def get_playlist_entries(query: str) -> List[dict]:
                     })
             return entries
         else:
-            # Single video, not a playlist
+            print(f"❌ No 'entries' in data - not a playlist", flush=True)
             return []
     
     except Exception as e:
         print(f"❌ Error extracting playlist: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
         return []
 
 
