@@ -25,9 +25,6 @@ except OSError:
 # yt-dlp for audio extraction
 import yt_dlp
 
-# Suppress yt-dlp noise
-yt_dlp.utils.bug_reports_message = lambda: ''
-
 YTDL_OPTIONS = {
     'format': 'bestaudio/best',
     'extractaudio': True,
@@ -230,10 +227,19 @@ class MusicPlayer:
         """Connect to a voice channel."""
         try:
             print(f"🔊 Attempting to connect to voice channel: {channel.name} ({channel.id})")
-            if self.voice_client and self.voice_client.is_connected():
-                await self.voice_client.move_to(channel)
+            
+            # Check if already connected to this guild
+            existing_vc = discord.utils.get(self.bot.voice_clients, guild=self.guild)
+            if existing_vc:
+                print(f"📍 Already connected to: {existing_vc.channel.name}")
+                if existing_vc.channel.id != channel.id:
+                    print(f"🔄 Moving to: {channel.name}")
+                    await existing_vc.move_to(channel)
+                self.voice_client = existing_vc
             else:
+                print(f"🔌 Connecting fresh to: {channel.name}")
                 self.voice_client = await channel.connect()
+            
             print(f"✅ Connected to voice channel: {channel.name}")
             return True
         except Exception as e:
@@ -328,7 +334,14 @@ def get_player(bot: commands.Bot, guild: discord.Guild) -> MusicPlayer:
     """Get or create a music player for a guild."""
     if guild.id not in players:
         players[guild.id] = MusicPlayer(bot, guild)
-    return players[guild.id]
+    
+    # Sync voice client if bot is already connected
+    player = players[guild.id]
+    existing_vc = discord.utils.get(bot.voice_clients, guild=guild)
+    if existing_vc and player.voice_client != existing_vc:
+        player.voice_client = existing_vc
+    
+    return player
 
 
 class Music(commands.Cog):
