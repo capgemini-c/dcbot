@@ -27,11 +27,15 @@ YTDL_OPTIONS = {
     'nocheckcertificate': True,
     'ignoreerrors': False,
     'logtostderr': False,
-    'quiet': True,
-    'no_warnings': True,
+    'quiet': False,  # Enable logging for debugging
+    'no_warnings': False,
     'default_search': 'ytsearch',
     'source_address': '0.0.0.0',
     'extract_flat': False,
+    # Additional options to help with cloud environments
+    'geo_bypass': True,
+    'geo_bypass_country': 'US',
+    'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
 }
 
 FFMPEG_OPTIONS = {
@@ -194,7 +198,9 @@ async def get_song_info(query: str, requester: str) -> Optional[Song]:
         )
     
     except Exception as e:
-        print(f"Error extracting song info: {e}")
+        print(f"❌ Error extracting song info for '{query}': {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 
