@@ -107,10 +107,20 @@ async def on_ready():
         print("🎵 Music cog loaded!")
     except Exception as e:
         print(f"❌ Failed to load music cog: {e}")
+        import traceback
+        traceback.print_exc()
     
-    # Sync slash commands
+    # Sync slash commands globally
     await bot.tree.sync()
-    print("✅ Slash commands synced!")
+    print("✅ Slash commands synced globally!")
+    
+    # Also sync to each guild for instant updates
+    for guild in bot.guilds:
+        try:
+            await bot.tree.sync(guild=guild)
+            print(f"✅ Commands synced to guild: {guild.name}")
+        except Exception as e:
+            print(f"⚠️ Failed to sync to {guild.name}: {e}")
     
     # Schedule the daily message at 8 AM
     scheduler.add_job(
