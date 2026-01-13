@@ -3,6 +3,8 @@ Music module for Discord bot - supports YouTube, SoundCloud, and Spotify links.
 """
 
 import asyncio
+import os
+import random
 import re
 from collections import deque
 from dataclasses import dataclass
@@ -24,6 +26,85 @@ except OSError:
 
 # yt-dlp for audio extraction
 import yt_dlp
+import urllib.request
+import json as json_lib
+
+# ============================================
+# NordVPN SOCKS5 Proxy Configuration
+# ============================================
+print("=" * 50)
+print("🔧 NORDVPN PROXY CONFIGURATION")
+print("=" * 50)
+
+NORDVPN_USER = os.getenv('NORDVPN_USER')
+NORDVPN_PASS = os.getenv('NORDVPN_PASS')
+
+if NORDVPN_USER and NORDVPN_PASS:
+    print(f"✅ Credentials configured")
+elif NORDVPN_USER:
+    print(f"✅ NORDVPN_USER set")
+    print(f"❌ NORDVPN_PASS missing!")
+else:
+    print("⚠️  NORDVPN_USER not set - proxy disabled")
+    print("   YouTube may not work from cloud servers!")
+
+# Allowed countries: Denmark, Sweden, Germany, Poland
+NORDVPN_COUNTRIES = {
+    'DK': (58, '🇩🇰 Denmark'),
+    'SE': (208, '🇸🇪 Sweden'),
+    'DE': (81, '🇩🇪 Germany'),
+    'PL': (174, '🇵🇱 Poland'),
+}
+
+def get_nordvpn_server() -> str:
+    """Fetch best NordVPN SOCKS5 server from DK/SE/DE/PL."""
+    print("-" * 50)
+    print("🔍 Searching for NordVPN SOCKS5 server...")
+    print(f"   Allowed regions: DK, SE, DE, PL")
+    
+    # Pick a random country from allowed list
+    countries = list(NORDVPN_COUNTRIES.items())
+    random.shuffle(countries)
+    print(f"   Trying order: {[c[0] for c in countries]}")
+    
+    for country_code, (country_id, country_name) in countries:
+        try:
+            print(f"   → Querying {country_name}...")
+            url = f'https://api.nordvpn.com/v1/servers/recommendations?filters[country_id]={country_id}&filters[servers_technologies][identifier]=socks&limit=1'
+            with urllib.request.urlopen(url, timeout=5) as response:
+                servers = json_lib.loads(response.read().decode())
+                if servers:
+                    hostname = servers[0]['hostname']
+                    load = servers[0].get('load', 'N/A')
+                    print(f"   ✅ Found: {hostname}")
+                    print(f"      Country: {country_name}")
+                    print(f"      Load: {load}%")
+                    return hostname
+                else:
+                    print(f"   ⚠️  No SOCKS servers available in {country_name}")
+        except Exception as e:
+            print(f"   ❌ Failed for {country_name}: {e}")
+            continue
+    
+    print("   ⚠️  All countries failed, using fallback")
+    return 'de1234.nordvpn.com'
+
+NORDVPN_SERVER = None
+if NORDVPN_USER:
+    if os.getenv('NORDVPN_SERVER'):
+        NORDVPN_SERVER = os.getenv('NORDVPN_SERVER')
+        print(f"   Using manual server: {NORDVPN_SERVER}")
+    else:
+        NORDVPN_SERVER = get_nordvpn_server()
+
+print("-" * 50)
+if NORDVPN_SERVER and NORDVPN_USER and NORDVPN_PASS:
+    print(f"🔒 PROXY ENABLED")
+    print(f"   Server: {NORDVPN_SERVER}")
+    print(f"   Port: 1080 (SOCKS5)")
+else:
+    print("🔓 PROXY DISABLED - Direct connection")
+print("=" * 50)
 
 YTDL_OPTIONS = {
     'format': 'bestaudio/best',
@@ -35,16 +116,23 @@ YTDL_OPTIONS = {
     'nocheckcertificate': True,
     'ignoreerrors': False,
     'logtostderr': False,
-    'quiet': False,  # Enable logging for debugging
+    'quiet': False,
     'no_warnings': False,
     'default_search': 'ytsearch',
     'source_address': '0.0.0.0',
     'extract_flat': False,
-    # Additional options to help with cloud environments
     'geo_bypass': True,
     'geo_bypass_country': 'US',
-    'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
+    'extractor_args': {'youtube': {'player_client': ['ios', 'mweb']}},
 }
+
+# Add proxy if NordVPN credentials are set
+if NORDVPN_USER and NORDVPN_PASS and NORDVPN_SERVER:
+    proxy_url = f'socks5://{NORDVPN_USER}:{NORDVPN_PASS}@{NORDVPN_SERVER}:1080'
+    YTDL_OPTIONS['proxy'] = proxy_url
+    print(f"✅ yt-dlp proxy configured: socks5://*****:*****@{NORDVPN_SERVER}:1080")
+else:
+    print("⚠️  yt-dlp running without proxy")
 
 FFMPEG_OPTIONS = {
     'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
