@@ -194,8 +194,16 @@ if NORDVPN_USER and NORDVPN_PASS and NORDVPN_SERVER:
 else:
     print("⚠️  yt-dlp running without proxy", flush=True)
 
+# FFmpeg options - must route through same proxy as yt-dlp for IP-locked URLs
+FFMPEG_BEFORE = '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
+if NORDVPN_USER and NORDVPN_PASS and NORDVPN_SERVER:
+    # Route FFmpeg through SOCKS5 proxy (same IP as yt-dlp extraction)
+    proxy_url = f'socks5h://{NORDVPN_USER}:{NORDVPN_PASS}@{NORDVPN_SERVER}:1080'
+    FFMPEG_BEFORE = f'-http_proxy {proxy_url} {FFMPEG_BEFORE}'
+    print(f"✅ FFmpeg proxy configured: socks5h://*****:*****@{NORDVPN_SERVER}:1080", flush=True)
+
 FFMPEG_OPTIONS = {
-    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+    'before_options': FFMPEG_BEFORE,
     'options': '-vn',
 }
 
