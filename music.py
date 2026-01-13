@@ -555,6 +555,54 @@ class Music(commands.Cog):
         else:
             print("⏸️ Player already running, song queued")
     
+    @app_commands.command(name="testplay", description="Test command - plays Rick Astley")
+    async def testplay(self, interaction: discord.Interaction):
+        """Test command that plays a known YouTube video."""
+        TEST_URL = "https://www.youtube.com/watch?v=4kHl4FoK1Ys"
+        print(f"🧪 /testplay command received from {interaction.user.display_name}", flush=True)
+        
+        # Check if user is in a voice channel
+        if not interaction.user.voice or not interaction.user.voice.channel:
+            await interaction.response.send_message(
+                "❌ Tu turi būti voice kanale!",
+                ephemeral=True
+            )
+            return
+        
+        await interaction.response.defer()
+        
+        voice_channel = interaction.user.voice.channel
+        player = get_player(self.bot, interaction.guild)
+        
+        # Connect to voice channel
+        if not await player.connect(voice_channel):
+            await interaction.followup.send("❌ Nepavyko prisijungti prie voice kanalo!")
+            return
+        
+        print(f"🧪 Testing with URL: {TEST_URL}", flush=True)
+        
+        # Get song info
+        song = await get_song_info(TEST_URL, interaction.user.display_name)
+        if not song:
+            await interaction.followup.send("❌ Test failed - nepavyko gauti dainos info.")
+            return
+        
+        print(f"🧪 Got song: {song.title}", flush=True)
+        
+        # Add to queue
+        player.queue.add(song)
+        
+        embed = discord.Embed(
+            title="🧪 Test Mode",
+            description=f"Playing: **{song.title}**",
+            color=discord.Color.orange()
+        )
+        await interaction.followup.send(embed=embed)
+        
+        # Start playing
+        if not player.voice_client.is_playing() and (player._player_task is None or player._player_task.done()):
+            player._player_task = asyncio.create_task(player.start_player_loop())
+    
     @app_commands.command(name="stop", description="Sustabdyti muziką ir išvalyti eilę")
     async def stop(self, interaction: discord.Interaction):
         """Stop playback and clear the queue."""
