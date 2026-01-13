@@ -16,13 +16,13 @@ from discord.ext import commands
 # Load opus for voice support
 try:
     discord.opus.load_opus('libopus.so.0')
-    print("✅ Opus loaded successfully")
+    print("✅ Opus loaded successfully", flush=True)
 except OSError:
     try:
         discord.opus.load_opus('opus')
-        print("✅ Opus loaded successfully (fallback)")
+        print("✅ Opus loaded successfully (fallback)", flush=True)
     except OSError as e:
-        print(f"⚠️ Could not load opus: {e}")
+        print(f"⚠️ Could not load opus: {e}", flush=True)
 
 # yt-dlp for audio extraction
 import yt_dlp
@@ -32,21 +32,21 @@ import json as json_lib
 # ============================================
 # NordVPN SOCKS5 Proxy Configuration
 # ============================================
-print("=" * 50)
-print("🔧 NORDVPN PROXY CONFIGURATION")
-print("=" * 50)
+print("=" * 50, flush=True)
+print("🔧 NORDVPN PROXY CONFIGURATION", flush=True)
+print("=" * 50, flush=True)
 
 NORDVPN_USER = os.getenv('NORDVPN_USER')
 NORDVPN_PASS = os.getenv('NORDVPN_PASS')
 
 if NORDVPN_USER and NORDVPN_PASS:
-    print(f"✅ Credentials configured")
+    print("✅ Credentials configured", flush=True)
 elif NORDVPN_USER:
-    print(f"✅ NORDVPN_USER set")
-    print(f"❌ NORDVPN_PASS missing!")
+    print("✅ NORDVPN_USER set", flush=True)
+    print("❌ NORDVPN_PASS missing!", flush=True)
 else:
-    print("⚠️  NORDVPN_USER not set - proxy disabled")
-    print("   YouTube may not work from cloud servers!")
+    print("⚠️  NORDVPN_USER not set - proxy disabled", flush=True)
+    print("   YouTube may not work from cloud servers!", flush=True)
 
 # Allowed countries: Denmark, Sweden, Germany, Poland
 NORDVPN_COUNTRIES = {
@@ -58,53 +58,53 @@ NORDVPN_COUNTRIES = {
 
 def get_nordvpn_server() -> str:
     """Fetch best NordVPN SOCKS5 server from DK/SE/DE/PL."""
-    print("-" * 50)
-    print("🔍 Searching for NordVPN SOCKS5 server...")
-    print(f"   Allowed regions: DK, SE, DE, PL")
+    print("-" * 50, flush=True)
+    print("🔍 Searching for NordVPN SOCKS5 server...", flush=True)
+    print("   Allowed regions: DK, SE, DE, PL", flush=True)
     
     # Pick a random country from allowed list
     countries = list(NORDVPN_COUNTRIES.items())
     random.shuffle(countries)
-    print(f"   Trying order: {[c[0] for c in countries]}")
+    print(f"   Trying order: {[c[0] for c in countries]}", flush=True)
     
     for country_code, (country_id, country_name) in countries:
         try:
-            print(f"   → Querying {country_name}...")
+            print(f"   → Querying {country_name}...", flush=True)
             url = f'https://api.nordvpn.com/v1/servers/recommendations?filters[country_id]={country_id}&filters[servers_technologies][identifier]=socks&limit=1'
             with urllib.request.urlopen(url, timeout=5) as response:
                 servers = json_lib.loads(response.read().decode())
                 if servers:
                     hostname = servers[0]['hostname']
                     load = servers[0].get('load', 'N/A')
-                    print(f"   ✅ Found: {hostname}")
-                    print(f"      Country: {country_name}")
-                    print(f"      Load: {load}%")
+                    print(f"   ✅ Found: {hostname}", flush=True)
+                    print(f"      Country: {country_name}", flush=True)
+                    print(f"      Load: {load}%", flush=True)
                     return hostname
                 else:
-                    print(f"   ⚠️  No SOCKS servers available in {country_name}")
+                    print(f"   ⚠️  No SOCKS servers available in {country_name}", flush=True)
         except Exception as e:
-            print(f"   ❌ Failed for {country_name}: {e}")
+            print(f"   ❌ Failed for {country_name}: {e}", flush=True)
             continue
     
-    print("   ⚠️  All countries failed, using fallback")
+    print("   ⚠️  All countries failed, using fallback", flush=True)
     return 'de1234.nordvpn.com'
 
 NORDVPN_SERVER = None
 if NORDVPN_USER:
     if os.getenv('NORDVPN_SERVER'):
         NORDVPN_SERVER = os.getenv('NORDVPN_SERVER')
-        print(f"   Using manual server: {NORDVPN_SERVER}")
+        print(f"   Using manual server: {NORDVPN_SERVER}", flush=True)
     else:
         NORDVPN_SERVER = get_nordvpn_server()
 
-print("-" * 50)
+print("-" * 50, flush=True)
 if NORDVPN_SERVER and NORDVPN_USER and NORDVPN_PASS:
-    print(f"🔒 PROXY ENABLED")
-    print(f"   Server: {NORDVPN_SERVER}")
-    print(f"   Port: 1080 (SOCKS5)")
+    print("🔒 PROXY ENABLED", flush=True)
+    print(f"   Server: {NORDVPN_SERVER}", flush=True)
+    print("   Port: 1080 (SOCKS5)", flush=True)
 else:
-    print("🔓 PROXY DISABLED - Direct connection")
-print("=" * 50)
+    print("🔓 PROXY DISABLED - Direct connection", flush=True)
+print("=" * 50, flush=True)
 
 YTDL_OPTIONS = {
     'format': 'bestaudio/best',
@@ -130,9 +130,9 @@ YTDL_OPTIONS = {
 if NORDVPN_USER and NORDVPN_PASS and NORDVPN_SERVER:
     proxy_url = f'socks5://{NORDVPN_USER}:{NORDVPN_PASS}@{NORDVPN_SERVER}:1080'
     YTDL_OPTIONS['proxy'] = proxy_url
-    print(f"✅ yt-dlp proxy configured: socks5://*****:*****@{NORDVPN_SERVER}:1080")
+    print(f"✅ yt-dlp proxy configured: socks5://*****:*****@{NORDVPN_SERVER}:1080", flush=True)
 else:
-    print("⚠️  yt-dlp running without proxy")
+    print("⚠️  yt-dlp running without proxy", flush=True)
 
 FFMPEG_OPTIONS = {
     'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
