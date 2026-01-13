@@ -194,18 +194,15 @@ if NORDVPN_USER and NORDVPN_PASS and NORDVPN_SERVER:
 else:
     print("⚠️  yt-dlp running without proxy", flush=True)
 
-# FFmpeg options - must route through same proxy as yt-dlp for IP-locked URLs
-FFMPEG_BEFORE = '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
-if NORDVPN_USER and NORDVPN_PASS and NORDVPN_SERVER:
-    # Route FFmpeg through SOCKS5 proxy (same IP as yt-dlp extraction)
-    proxy_url = f'socks5h://{NORDVPN_USER}:{NORDVPN_PASS}@{NORDVPN_SERVER}:1080'
-    FFMPEG_BEFORE = f'-http_proxy {proxy_url} {FFMPEG_BEFORE}'
-    print(f"✅ FFmpeg proxy configured: socks5h://*****:*****@{NORDVPN_SERVER}:1080", flush=True)
-
+# FFmpeg options for local file playback (no proxy needed - file is already downloaded)
 FFMPEG_OPTIONS = {
-    'before_options': FFMPEG_BEFORE,
     'options': '-vn',
 }
+
+# Audio download directory
+AUDIO_CACHE_DIR = '/tmp/dcbot_audio'
+os.makedirs(AUDIO_CACHE_DIR, exist_ok=True)
+print(f"📁 Audio cache: {AUDIO_CACHE_DIR}", flush=True)
 
 ytdl = yt_dlp.YoutubeDL(YTDL_OPTIONS)
 
@@ -215,7 +212,7 @@ class Song:
     """Represents a song in the queue."""
     title: str
     url: str
-    stream_url: str
+    local_file: str  # Path to downloaded audio file
     duration: Optional[int] = None
     thumbnail: Optional[str] = None
     requester: Optional[str] = None
@@ -229,6 +226,15 @@ class Song:
         if hours:
             return f"{hours}:{minutes:02d}:{seconds:02d}"
         return f"{minutes}:{seconds:02d}"
+    
+    def cleanup(self):
+        """Delete the downloaded audio file."""
+        try:
+            if self.local_file and os.path.exists(self.local_file):
+                os.remove(self.local_file)
+                print(f"🗑️ Cleaned up: {os.path.basename(self.local_file)}", flush=True)
+        except Exception as e:
+            print(f"⚠️ Failed to cleanup {self.local_file}: {e}", flush=True)
 
 
 class MusicQueue:
@@ -307,10 +313,11 @@ async def extract_spotify_query(url: str) -> Optional[str]:
     return None
 
 
-async def get_song_info(query: str, requester: str, timeout_seconds: int = 60) -> Optional[Song]:
+async def get_song_info(query: str, requester: str, timeout_seconds: int = 120) -> Optional[Song]:
     """
-    Extract song information from a URL or search query.
+    Download audio from a URL or search query.
     Supports YouTube, SoundCloud, and Spotify.
+    Downloads via proxy to avoid IP-locked URLs.
     """
     try:
         loop = asyncio.get_event_loop()
@@ -321,28 +328,34 @@ async def get_song_info(query: str, requester: str, timeout_seconds: int = 60) -
             if search_query:
                 query = f"ytsearch:{search_query}"
             else:
-                # If we couldn't extract, try searching by the original URL text
                 query = f"ytsearch:{query}"
         
-        print(f"🔄 Starting yt-dlp extraction for: {query[:60]}...", flush=True)
+        print(f"🔄 Starting yt-dlp download for: {query[:60]}...", flush=True)
         start_time = asyncio.get_event_loop().time()
         
-        # Extract info with timeout
+        # Create download options with unique output path
+        import uuid
+        file_id = str(uuid.uuid4())[:8]
+        download_opts = YTDL_OPTIONS.copy()
+        download_opts['outtmpl'] = os.path.join(AUDIO_CACHE_DIR, f'{file_id}-%(id)s.%(ext)s')
+        
+        # Download with timeout
         try:
+            def do_download():
+                with yt_dlp.YoutubeDL(download_opts) as ydl:
+                    return ydl.extract_info(query, download=True)
+            
             data = await asyncio.wait_for(
-                loop.run_in_executor(
-                    None,
-                    lambda: ytdl.extract_info(query, download=False)
-                ),
+                loop.run_in_executor(None, do_download),
                 timeout=timeout_seconds
             )
         except asyncio.TimeoutError:
             elapsed = asyncio.get_event_loop().time() - start_time
-            print(f"❌ yt-dlp timed out after {elapsed:.1f}s - proxy may be blocked or slow", flush=True)
+            print(f"❌ yt-dlp timed out after {elapsed:.1f}s", flush=True)
             return None
         
         elapsed = asyncio.get_event_loop().time() - start_time
-        print(f"✅ yt-dlp extraction completed in {elapsed:.1f}s", flush=True)
+        print(f"✅ yt-dlp download completed in {elapsed:.1f}s", flush=True)
         
         if not data:
             return None
@@ -353,30 +366,34 @@ async def get_song_info(query: str, requester: str, timeout_seconds: int = 60) -
             if not data:
                 return None
         
-        # Get the best audio URL
-        stream_url = data.get('url')
-        if not stream_url:
-            # Try to get from formats
-            formats = data.get('formats', [])
-            for f in formats:
-                if f.get('acodec') != 'none':
-                    stream_url = f.get('url')
-                    break
+        # Find the downloaded file
+        video_id = data.get('id', 'unknown')
+        local_file = None
         
-        if not stream_url:
+        # Look for the downloaded file in cache dir
+        for f in os.listdir(AUDIO_CACHE_DIR):
+            if f.startswith(file_id) and video_id in f:
+                local_file = os.path.join(AUDIO_CACHE_DIR, f)
+                break
+        
+        if not local_file or not os.path.exists(local_file):
+            print(f"❌ Downloaded file not found for {video_id}", flush=True)
             return None
+        
+        file_size = os.path.getsize(local_file) / (1024 * 1024)
+        print(f"📁 Downloaded: {os.path.basename(local_file)} ({file_size:.1f} MB)", flush=True)
         
         return Song(
             title=data.get('title', 'Unknown'),
             url=data.get('webpage_url', query),
-            stream_url=stream_url,
+            local_file=local_file,
             duration=data.get('duration'),
             thumbnail=data.get('thumbnail'),
             requester=requester
         )
     
     except Exception as e:
-        print(f"❌ Error extracting song info for '{query}': {type(e).__name__}: {e}")
+        print(f"❌ Error downloading song for '{query}': {type(e).__name__}: {e}", flush=True)
         import traceback
         traceback.print_exc()
         return None
@@ -442,10 +459,23 @@ class MusicPlayer:
         
         try:
             print(f"🔊 Creating FFmpeg audio source...")
-            print(f"   Stream URL: {song.stream_url[:100]}...")
-            source = discord.FFmpegPCMAudio(song.stream_url, **FFMPEG_OPTIONS)
+            print(f"   Local file: {song.local_file}")
+            
+            if not os.path.exists(song.local_file):
+                print(f"❌ Audio file not found: {song.local_file}")
+                return False
+            
+            source = discord.FFmpegPCMAudio(song.local_file, **FFMPEG_OPTIONS)
             print(f"✅ FFmpeg source created, starting playback...")
-            self.voice_client.play(source, after=self.play_next)
+            
+            # Wrap callback to cleanup after playback
+            def after_play(error):
+                if error:
+                    print(f"❌ Playback error: {error}", flush=True)
+                song.cleanup()  # Delete downloaded file
+                self.play_next(error)
+            
+            self.voice_client.play(source, after=after_play)
             self.queue.current = song
             print(f"✅ Playback started for: {song.title}")
             return True
@@ -453,6 +483,7 @@ class MusicPlayer:
             print(f"❌ Error playing song: {type(e).__name__}: {e}")
             import traceback
             traceback.print_exc()
+            song.cleanup()  # Clean up on error too
             return False
     
     async def start_player_loop(self):
