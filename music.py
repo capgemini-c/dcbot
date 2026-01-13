@@ -24,6 +24,27 @@ except OSError:
     except OSError as e:
         print(f"⚠️ Could not load opus: {e}", flush=True)
 
+# Check PyNaCl/libsodium status
+print("=" * 50, flush=True)
+print("🔐 ENCRYPTION STATUS", flush=True)
+print("=" * 50, flush=True)
+try:
+    import nacl
+    print(f"✅ PyNaCl version: {nacl.__version__}", flush=True)
+    from nacl import secret
+    print("✅ nacl.secret imported", flush=True)
+    # Test if encryption actually works
+    from nacl.secret import SecretBox
+    key = b'0' * 32
+    box = SecretBox(key)
+    test = box.encrypt(b'test')
+    print("✅ Encryption test passed", flush=True)
+except Exception as e:
+    print(f"❌ PyNaCl/libsodium error: {type(e).__name__}: {e}", flush=True)
+    import traceback
+    traceback.print_exc()
+print("=" * 50, flush=True)
+
 # yt-dlp for audio extraction
 import yt_dlp
 import urllib.request
