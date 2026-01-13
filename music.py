@@ -11,6 +11,17 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+# Load opus for voice support
+try:
+    discord.opus.load_opus('libopus.so.0')
+    print("✅ Opus loaded successfully")
+except OSError:
+    try:
+        discord.opus.load_opus('opus')
+        print("✅ Opus loaded successfully (fallback)")
+    except OSError as e:
+        print(f"⚠️ Could not load opus: {e}")
+
 # yt-dlp for audio extraction
 import yt_dlp
 
@@ -218,13 +229,17 @@ class MusicPlayer:
     async def connect(self, channel: discord.VoiceChannel) -> bool:
         """Connect to a voice channel."""
         try:
+            print(f"🔊 Attempting to connect to voice channel: {channel.name} ({channel.id})")
             if self.voice_client and self.voice_client.is_connected():
                 await self.voice_client.move_to(channel)
             else:
                 self.voice_client = await channel.connect()
+            print(f"✅ Connected to voice channel: {channel.name}")
             return True
         except Exception as e:
-            print(f"Error connecting to voice channel: {e}")
+            print(f"❌ Error connecting to voice channel: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     async def disconnect(self):
@@ -244,36 +259,52 @@ class MusicPlayer:
     
     async def play(self, song: Song) -> bool:
         """Play a song."""
+        print(f"🎵 play() called for: {song.title}")
         if not self.voice_client or not self.voice_client.is_connected():
+            print("❌ No voice client or not connected")
             return False
         
         try:
+            print(f"🔊 Creating FFmpeg audio source...")
+            print(f"   Stream URL: {song.stream_url[:100]}...")
             source = discord.FFmpegPCMAudio(song.stream_url, **FFMPEG_OPTIONS)
+            print(f"✅ FFmpeg source created, starting playback...")
             self.voice_client.play(source, after=self.play_next)
             self.queue.current = song
+            print(f"✅ Playback started for: {song.title}")
             return True
         except Exception as e:
-            print(f"Error playing song: {e}")
+            print(f"❌ Error playing song: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     async def start_player_loop(self):
         """Main player loop - plays songs from queue."""
+        print("🔄 Player loop started")
         while True:
             self._play_next_event.clear()
             
+            print("📋 Getting next song from queue...")
             song = self.queue.next()
             if not song:
+                print("📭 No song in queue, checking if empty...")
                 # Queue empty, wait for new songs
                 await asyncio.sleep(0.5)
                 if self.queue.is_empty():
+                    print("🛑 Queue empty, exiting player loop")
                     break
                 continue
             
+            print(f"▶️ Playing next: {song.title}")
             if not await self.play(song):
+                print("❌ play() returned False, skipping to next")
                 continue
             
             # Wait for song to finish
+            print("⏳ Waiting for song to finish...")
             await self._play_next_event.wait()
+            print("✅ Song finished")
     
     def skip(self) -> bool:
         """Skip the current song."""
@@ -310,32 +341,46 @@ class Music(commands.Cog):
     @app_commands.describe(query="YouTube/SoundCloud/Spotify nuoroda arba paieškos užklausa")
     async def play(self, interaction: discord.Interaction, query: str):
         """Play a song from YouTube, SoundCloud, or Spotify."""
+        print(f"▶️ /play command received from {interaction.user.display_name}: {query}")
+        
         # Check if user is in a voice channel
         if not interaction.user.voice or not interaction.user.voice.channel:
+            print("❌ User not in voice channel")
             await interaction.response.send_message(
                 "❌ Tu turi būti voice kanale, kad galėtum groti muziką!",
                 ephemeral=True
             )
             return
         
+        print(f"📍 User is in voice channel: {interaction.user.voice.channel.name}")
         await interaction.response.defer()
+        print("⏳ Response deferred")
         
         voice_channel = interaction.user.voice.channel
         player = get_player(self.bot, interaction.guild)
+        print(f"🎮 Got player for guild: {interaction.guild.name}")
         
         # Connect to voice channel
+        print(f"🔌 Attempting to connect to: {voice_channel.name}")
         if not await player.connect(voice_channel):
+            print("❌ Failed to connect to voice channel")
             await interaction.followup.send("❌ Nepavyko prisijungti prie voice kanalo!")
             return
+        
+        print("✅ Connected to voice channel, now extracting song info...")
         
         # Get song info
         song = await get_song_info(query, interaction.user.display_name)
         if not song:
+            print("❌ Failed to get song info")
             await interaction.followup.send("❌ Nepavyko rasti dainos. Patikrink nuorodą arba pabandyk kitą paiešką.")
             return
         
+        print(f"🎵 Got song: {song.title} ({song.duration_str})")
+        
         # Add to queue
         player.queue.add(song)
+        print(f"📋 Added to queue. Queue length: {len(player.queue)}")
         
         # Create embed
         embed = discord.Embed(
@@ -351,10 +396,15 @@ class Music(commands.Cog):
             embed.set_thumbnail(url=song.thumbnail)
         
         await interaction.followup.send(embed=embed)
+        print("📤 Sent embed response")
         
         # Start playing if not already
+        print(f"🔍 Checking if should start playing: is_playing={player.voice_client.is_playing() if player.voice_client else 'no client'}, task={player._player_task}")
         if not player.voice_client.is_playing() and (player._player_task is None or player._player_task.done()):
+            print("🎬 Starting player loop...")
             player._player_task = asyncio.create_task(player.start_player_loop())
+        else:
+            print("⏸️ Player already running, song queued")
     
     @app_commands.command(name="stop", description="Sustabdyti muziką ir išvalyti eilę")
     async def stop(self, interaction: discord.Interaction):
