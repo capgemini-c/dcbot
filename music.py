@@ -505,6 +505,8 @@ class MusicPlayer:
         self.voice_client: Optional[discord.VoiceClient] = None
         self._play_next_event = asyncio.Event()
         self._player_task: Optional[asyncio.Task] = None
+        self.now_playing_message: Optional[discord.Message] = None  # Store message to update
+        self.playlist_info: dict = {'total': 0, 'downloaded': 0}  # Track playlist progress
     
     async def connect(self, channel: discord.VoiceChannel) -> bool:
         """Connect to a voice channel."""
@@ -600,6 +602,34 @@ class MusicPlayer:
                 continue
             
             print(f"▶️ Playing next: {song.title}")
+            
+            # Update now playing message
+            if self.now_playing_message:
+                try:
+                    embed = discord.Embed(
+                        title="🎵 Pridėta į eilę",
+                        description=f"**[{song.title}]({song.url})**",
+                        color=discord.Color.green()
+                    )
+                    embed.add_field(name="Trukmė", value=song.duration_str, inline=True)
+                    
+                    # Show queue count or playlist progress
+                    if self.playlist_info['total'] > 0:
+                        queue_info = f"{len(self.queue)} + {self.playlist_info['total'] - self.playlist_info['downloaded']} kraunama"
+                    else:
+                        queue_info = str(len(self.queue))
+                    embed.add_field(name="Eilėje", value=queue_info, inline=True)
+                    embed.add_field(name="Užsakė", value=song.requester, inline=True)
+                    
+                    if song.thumbnail:
+                        embed.set_thumbnail(url=song.thumbnail)
+                    
+                    # Keep the same view
+                    view = MusicControlView(self.bot, self.guild.id)
+                    await self.now_playing_message.edit(embed=embed, view=view)
+                except Exception as e:
+                    print(f"⚠️ Failed to update now playing message: {e}", flush=True)
+            
             if not await self.play(song):
                 print("❌ play() returned False, skipping to next")
                 continue
@@ -698,16 +728,26 @@ class MusicControlView(discord.ui.View):
                 inline=False
             )
         
-        # Queue
+        # Queue - show up to 20 songs
         if player.queue.queue:
             queue_text = ""
-            for i, song in enumerate(list(player.queue.queue)[:10], 1):
-                queue_text += f"{i}. {song.title} ({song.duration_str})\n"
-            if len(player.queue.queue) > 10:
-                queue_text += f"\n... ir dar {len(player.queue.queue) - 10} dainos"
+            for i, song in enumerate(list(player.queue.queue)[:20], 1):
+                queue_text += f"{i}. {song.title[:50]} ({song.duration_str})\n"
+            if len(player.queue.queue) > 20:
+                queue_text += f"\n... ir dar {len(player.queue.queue) - 20} dainos"
             embed.add_field(name=f"📋 Eilėje ({len(player.queue.queue)} dainos)", value=queue_text, inline=False)
         else:
-            embed.add_field(name="📋 Eilėje", value="Tuščia (dainos gali dar krautis)", inline=False)
+            embed.add_field(name="📋 Eilėje", value="Tuščia", inline=False)
+        
+        # Show playlist download progress if active
+        if player.playlist_info['total'] > 0:
+            pending = player.playlist_info['total'] - player.playlist_info['downloaded']
+            if pending > 0:
+                embed.add_field(
+                    name="⬇️ Kraunama",
+                    value=f"{pending} dainų dar kraunasi iš playlist'o",
+                    inline=False
+                )
         
         await interaction.response.send_message(embed=embed, ephemeral=True, delete_after=30)
 
@@ -771,11 +811,15 @@ class Music(commands.Cog):
             # It's a playlist - download in background
             print(f"📋 Found playlist with {len(playlist_entries)} songs", flush=True)
             
+            # Set playlist tracking info
+            player.playlist_info = {'total': len(playlist_entries), 'downloaded': 0}
+            
             # Download and queue each song (no status messages)
             for i, entry in enumerate(playlist_entries):
                 song = await download_song(entry['url'], interaction.user.display_name, timeout_seconds=90)
                 if song:
                     player.queue.add(song)
+                    player.playlist_info['downloaded'] += 1
                     print(f"📋 Playlist [{i+1}/{len(playlist_entries)}]: {song.title}", flush=True)
                     
                     # Start playing on first song and show its info
@@ -798,7 +842,10 @@ class Music(commands.Cog):
                             embed.set_thumbnail(url=song.thumbnail)
                         
                         view = MusicControlView(self.bot, interaction.guild.id)
-                        await interaction.followup.send(embed=embed, view=view)
+                        player.now_playing_message = await interaction.followup.send(embed=embed, view=view)
+            
+            # Reset playlist tracking when done
+            player.playlist_info = {'total': 0, 'downloaded': 0}
         else:
             # Single song
             print("🎵 Single song, downloading...")
@@ -828,7 +875,7 @@ class Music(commands.Cog):
                 embed.set_thumbnail(url=song.thumbnail)
             
             view = MusicControlView(self.bot, interaction.guild.id)
-            await interaction.followup.send(embed=embed, view=view)
+            player.now_playing_message = await interaction.followup.send(embed=embed, view=view)
             print("📤 Sent embed response with controls")
             
             # Start playing if not already
