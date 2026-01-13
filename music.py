@@ -57,9 +57,9 @@ NORDVPN_COUNTRIES = {
 }
 
 def get_nordvpn_server() -> str:
-    """Fetch best NordVPN SOCKS5 server from DK/SE/DE/PL."""
+    """Fetch best NordVPN server from DK/SE/DE/PL. All servers support SOCKS5."""
     print("-" * 50, flush=True)
-    print("🔍 Searching for NordVPN SOCKS5 server...", flush=True)
+    print("🔍 Searching for NordVPN server...", flush=True)
     print("   Allowed regions: DK, SE, DE, PL", flush=True)
     
     # Pick a random country from allowed list
@@ -70,8 +70,9 @@ def get_nordvpn_server() -> str:
     for country_code, (country_id, country_name) in countries:
         try:
             print(f"   → Querying {country_name}...", flush=True)
-            url = f'https://api.nordvpn.com/v1/servers/recommendations?filters[country_id]={country_id}&filters[servers_technologies][identifier]=socks&limit=1'
-            with urllib.request.urlopen(url, timeout=5) as response:
+            # Get recommended servers (all NordVPN servers support SOCKS5 on port 1080)
+            url = f'https://api.nordvpn.com/v1/servers/recommendations?filters[country_id]={country_id}&limit=1'
+            with urllib.request.urlopen(url, timeout=10) as response:
                 servers = json_lib.loads(response.read().decode())
                 if servers:
                     hostname = servers[0]['hostname']
@@ -81,13 +82,16 @@ def get_nordvpn_server() -> str:
                     print(f"      Load: {load}%", flush=True)
                     return hostname
                 else:
-                    print(f"   ⚠️  No SOCKS servers available in {country_name}", flush=True)
+                    print(f"   ⚠️  No servers available in {country_name}", flush=True)
         except Exception as e:
             print(f"   ❌ Failed for {country_name}: {e}", flush=True)
             continue
     
-    print("   ⚠️  All countries failed, using fallback", flush=True)
-    return 'de1234.nordvpn.com'
+    # Real fallback servers
+    fallbacks = ['de1047.nordvpn.com', 'se512.nordvpn.com', 'pl245.nordvpn.com', 'dk95.nordvpn.com']
+    fallback = random.choice(fallbacks)
+    print(f"   ⚠️  All countries failed, using fallback: {fallback}", flush=True)
+    return fallback
 
 NORDVPN_SERVER = None
 if NORDVPN_USER:
