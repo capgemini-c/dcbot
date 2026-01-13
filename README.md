@@ -7,6 +7,7 @@ A simple Discord bot that sends a random message from a predefined collection ev
 - 📅 Sends a random message daily at 8:00 AM (configurable timezone)
 - 🎲 Randomly picks from a collection of messages
 - 🧪 Test commands to verify functionality
+- 🎵 Music streaming from YouTube, Spotify, and SoundCloud
 
 ## Setup
 
@@ -21,8 +22,8 @@ A simple Discord bot that sends a random message from a predefined collection ev
 ### 2. Invite the Bot to Your Server
 
 1. In the Developer Portal, go to "OAuth2" → "URL Generator"
-2. Select scopes: `bot`
-3. Select permissions: `Send Messages`, `Read Message History`
+2. Select scopes: `bot`, `applications.commands`
+3. Select permissions: `Send Messages`, `Read Message History`, `Connect`, `Speak`
 4. Copy the generated URL and open it to invite the bot
 
 ### 3. Get Channel ID
@@ -43,7 +44,22 @@ cp env.example .env
 # - TIMEZONE: Your timezone (default: Europe/Vilnius)
 ```
 
-### 5. Install & Run
+### 5. Install FFmpeg (Required for Music)
+
+FFmpeg is required for audio streaming. Install it for your OS:
+
+```bash
+# macOS (using Homebrew)
+brew install ffmpeg
+
+# Ubuntu/Debian
+sudo apt install ffmpeg
+
+# Windows (using Chocolatey)
+choco install ffmpeg
+```
+
+### 6. Install & Run
 
 ```bash
 # Create virtual environment
@@ -64,6 +80,16 @@ python bot.py
 | `!ping` | Check if the bot is alive |
 | `!test` | Manually trigger a random message |
 | `!messages` | List all possible messages |
+
+### Music Commands (Slash Commands)
+
+| Command | Description |
+|---------|-------------|
+| `/play <query>` | Play music from YouTube, Spotify, or SoundCloud |
+| `/stop` | Stop playback and clear the queue |
+| `/skip` | Skip the current song |
+| `/queue` | Show the current song queue |
+| `/nowplaying` | Show the currently playing song |
 
 ## Customizing Messages
 
@@ -88,4 +114,5 @@ For 24/7 operation, consider:
 ## License
 
 MIT
+
 

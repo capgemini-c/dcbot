@@ -10,6 +10,8 @@ from apscheduler.triggers.cron import CronTrigger
 from aiohttp import web
 import pytz
 
+from news import fetch_rytas_news
+
 load_dotenv()
 
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -99,6 +101,13 @@ async def on_ready():
     print(f"📢 Will send messages to channel ID: {CHANNEL_ID}")
     print(f"⏰ Scheduled for 8:00 AM {TIMEZONE}")
     
+    # Load music cog
+    try:
+        await bot.load_extension("music")
+        print("🎵 Music cog loaded!")
+    except Exception as e:
+        print(f"❌ Failed to load music cog: {e}")
+    
     # Sync slash commands
     await bot.tree.sync()
     print("✅ Slash commands synced!")
@@ -169,6 +178,24 @@ async def rytas(interaction: discord.Interaction):
         message = message[:1997] + "..."
     
     await interaction.response.send_message(message)
+
+
+@bot.tree.command(name="rytasnews", description="Gauti naujausias Vilniaus Ryto naujienas")
+async def rytasnews(interaction: discord.Interaction):
+    """Slash command to get latest Vilniaus Rytas news from basketnews.lt"""
+    await interaction.response.defer()  # This might take a moment
+    
+    articles = await fetch_rytas_news()
+    
+    if articles:
+        message = "**📰 Vilniaus Ryto naujienos (basketnews.lt):**\n\n"
+        for i, article in enumerate(articles, 1):
+            message += f"{i}. [{article['title']}]({article['url']})\n"
+        
+        if len(message) > 2000:
+            message = message[:1997] + "..."
+        
+        await interaction.followup.send(message)
 
 
 @bot.command(name="ping")
