@@ -743,52 +743,71 @@ class MusicControlView(discord.ui.View):
     
     @discord.ui.button(label="⏸️ Pause", style=discord.ButtonStyle.secondary, custom_id="music_pause")
     async def pause_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        print(f"🎛️ Pause button clicked by {interaction.user.display_name}", flush=True)
         player = self.get_player()
         if player and player.voice_client:
             if player.voice_client.is_playing():
+                print("⏸️ Pausing playback", flush=True)
                 player.voice_client.pause()
                 button.label = "▶️ Resume"
                 await interaction.response.edit_message(view=self)
             elif player.voice_client.is_paused():
+                print("▶️ Resuming playback", flush=True)
                 player.voice_client.resume()
                 button.label = "⏸️ Pause"
                 await interaction.response.edit_message(view=self)
             else:
+                print("⚠️ Not playing or paused, deferring", flush=True)
                 await interaction.response.defer()
         else:
+            print("⚠️ No player or voice client, deferring", flush=True)
             await interaction.response.defer()
     
     @discord.ui.button(label="⏭️ Skip", style=discord.ButtonStyle.primary, custom_id="music_skip")
     async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        print(f"⏭️ Skip button clicked by {interaction.user.display_name}", flush=True)
         player = self.get_player()
         if player and player.skip():
+            print("✅ Skipped to next song", flush=True)
             await interaction.response.send_message("⏭️ Praleidžiama...", ephemeral=True, delete_after=3)
         else:
+            print("⚠️ Nothing to skip", flush=True)
             await interaction.response.send_message("❌ Nėra ką praleisti", ephemeral=True, delete_after=3)
     
     @discord.ui.button(label="⏹️ Stop", style=discord.ButtonStyle.danger, custom_id="music_stop")
     async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        print(f"⏹️ Stop button clicked by {interaction.user.display_name}", flush=True)
         player = self.get_player()
         if player:
+            print("🛑 Stopping playback and disconnecting", flush=True)
             player.stop()
             if player.voice_client:
                 await player.voice_client.disconnect()
             await interaction.response.send_message("⏹️ Muzika sustabdyta", ephemeral=True, delete_after=3)
         else:
+            print("⚠️ No player found, deferring", flush=True)
             await interaction.response.defer()
     
     @discord.ui.button(label="📋 Queue", style=discord.ButtonStyle.secondary, custom_id="music_queue")
     async def queue_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        print(f"📋 Queue button clicked by {interaction.user.display_name}", flush=True)
+        
+        # Defer immediately to prevent timeout
+        await interaction.response.defer(ephemeral=True)
+        print("⏳ Queue button deferred, building embed...", flush=True)
+        
         player = self.get_player()
         
         embed = discord.Embed(title="📋 Muzikos eilė", color=discord.Color.blue())
         
         if not player:
-            await interaction.response.send_message("📭 Nėra aktyvaus grotuvo", ephemeral=True, delete_after=5)
+            print("⚠️ No player found", flush=True)
+            await interaction.followup.send("📭 Nėra aktyvaus grotuvo", ephemeral=True)
             return
         
         # Current song
         if player.queue.current:
+            print(f"▶️ Current song: {player.queue.current.title}", flush=True)
             embed.add_field(
                 name="▶️ Dabar groja",
                 value=f"**{player.queue.current.title}** ({player.queue.current.duration_str})",
@@ -803,6 +822,7 @@ class MusicControlView(discord.ui.View):
         
         # Queue - show up to 20 songs with download status
         if player.queue.queue:
+            print(f"📋 Queue has {len(player.queue.queue)} songs", flush=True)
             queue_text = ""
             for i, song in enumerate(list(player.queue.queue)[:20], 1):
                 # Show download status icon
@@ -829,7 +849,8 @@ class MusicControlView(discord.ui.View):
                     inline=False
                 )
         
-        await interaction.response.send_message(embed=embed, ephemeral=True, delete_after=30)
+        print("📤 Sending queue embed", flush=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 def get_player(bot: commands.Bot, guild: discord.Guild) -> MusicPlayer:
