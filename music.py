@@ -562,8 +562,12 @@ class MusicPlayer:
             if self.queue.current and not self.queue.current.is_downloaded:
                 songs_to_keep.append(self.queue.current)
             
-            # Add next N songs from queue
-            for i, song in enumerate(list(self.queue.queue)[:self._download_buffer_size - 1]):
+            # Determine how many songs to download from queue
+            # If current exists, download N-1 more. If no current, download N.
+            songs_needed = self._download_buffer_size - (1 if self.queue.current else 0)
+            
+            # Add next songs from queue
+            for i, song in enumerate(list(self.queue.queue)[:songs_needed]):
                 if not song.is_downloaded:
                     songs_to_keep.append(song)
             
@@ -581,13 +585,10 @@ class MusicPlayer:
                         print(f"❌ Buffer: Failed to download {song.title[:40]}", flush=True)
             
             # Cleanup songs beyond the buffer (keeping current + next N)
-            songs_in_buffer = []
-            if self.queue.current:
-                songs_in_buffer.append(self.queue.current)
-            songs_in_buffer.extend(list(self.queue.queue)[:self._download_buffer_size - 1])
+            songs_in_buffer_count = (1 if self.queue.current else 0) + songs_needed
             
             # Clean up songs beyond the buffer
-            for i, song in enumerate(list(self.queue.queue)[self._download_buffer_size - 1:], start=self._download_buffer_size - 1):
+            for i, song in enumerate(list(self.queue.queue)[songs_needed:], start=songs_needed):
                 if song.is_downloaded:
                     print(f"🗑️ Buffer: Cleaning song #{i+1} (beyond buffer): {song.title[:40]}", flush=True)
                     song.cleanup()
