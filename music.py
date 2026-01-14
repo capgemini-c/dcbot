@@ -669,8 +669,8 @@ class MusicPlayer:
             
             print(f"▶️ Playing next: {song.title}")
             
-            # Maintain download buffer after getting next song (so current is correct)
-            await self.maintain_download_buffer()
+            # Maintain download buffer in background (non-blocking)
+            asyncio.create_task(self.maintain_download_buffer())
             
             # Update now playing message
             if self.now_playing_message:
