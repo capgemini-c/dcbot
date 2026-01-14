@@ -515,6 +515,7 @@ class MusicPlayer:
         self.playlist_info: dict = {'total': 0, 'downloaded': 0}  # Track playlist progress
         self._download_buffer_size = 3  # Keep current + next 2 songs downloaded
         self._downloading_lock = asyncio.Lock()  # Prevent concurrent buffer updates
+        self._currently_downloading: set = set()  # Track songs currently being downloaded
     
     async def connect(self, channel: discord.VoiceChannel) -> bool:
         """Connect to a voice channel."""
@@ -574,8 +575,10 @@ class MusicPlayer:
             # Download any songs that aren't downloaded yet
             for song in songs_to_keep:
                 if not song.is_downloaded:
+                    self._currently_downloading.add(song.title)
                     print(f"📥 Buffer: Downloading {song.title[:40]}...", flush=True)
                     downloaded = await download_song(song.url, song.requester, timeout_seconds=90)
+                    self._currently_downloading.discard(song.title)
                     if downloaded:
                         song.local_file = downloaded.local_file
                         song.duration = downloaded.duration
@@ -673,16 +676,22 @@ class MusicPlayer:
             if self.now_playing_message:
                 try:
                     embed = discord.Embed(
-                        title="🎵 Pridėta į eilę",
+                        title="🎵 Dabar groja",
                         description=f"**[{song.title}]({song.url})**",
                         color=discord.Color.green()
                     )
                     embed.add_field(name="Trukmė", value=song.duration_str, inline=True)
-                    
-                    # Show queue count
-                    queue_info = str(len(self.queue))
-                    embed.add_field(name="Eilėje", value=queue_info, inline=True)
+                    embed.add_field(name="Eilėje", value=str(len(self.queue)), inline=True)
                     embed.add_field(name="Užsakė", value=song.requester, inline=True)
+                    
+                    # Show downloading status
+                    if self._currently_downloading:
+                        downloading_count = len(self._currently_downloading)
+                        embed.add_field(
+                            name="📥 Kraunama", 
+                            value=f"{downloading_count} daina{'s' if downloading_count > 1 else ''}", 
+                            inline=True
+                        )
                     
                     if song.thumbnail:
                         embed.set_thumbnail(url=song.thumbnail)
@@ -791,11 +800,18 @@ class MusicControlView(discord.ui.View):
                 inline=False
             )
         
-        # Queue - show up to 20 songs
+        # Queue - show up to 20 songs with download status
         if player.queue.queue:
             queue_text = ""
             for i, song in enumerate(list(player.queue.queue)[:20], 1):
-                queue_text += f"{i}. {song.title[:50]} ({song.duration_str})\n"
+                # Show download status icon
+                if song.is_downloaded:
+                    status_icon = "✅"
+                elif song.title in player._currently_downloading:
+                    status_icon = "📥"
+                else:
+                    status_icon = "⏳"
+                queue_text += f"{status_icon} {i}. {song.title[:45]} ({song.duration_str})\n"
             if len(player.queue.queue) > 20:
                 queue_text += f"\n... ir dar {len(player.queue.queue) - 20} dainos"
             embed.add_field(name=f"📋 Eilėje ({len(player.queue.queue)} dainos)", value=queue_text, inline=False)
@@ -1130,11 +1146,18 @@ class Music(commands.Cog):
                 inline=False
             )
         
-        # Queue
+        # Queue with download status
         if player.queue.queue:
             queue_list = []
             for i, song in enumerate(list(player.queue.queue)[:10], 1):
-                queue_list.append(f"`{i}.` **{song.title}** [{song.duration_str}]")
+                # Show download status icon
+                if song.is_downloaded:
+                    status_icon = "✅"
+                elif song.title in player._currently_downloading:
+                    status_icon = "📥"
+                else:
+                    status_icon = "⏳"
+                queue_list.append(f"{status_icon} `{i}.` **{song.title}** [{song.duration_str}]")
             
             embed.add_field(
                 name=f"📋 Eilėje ({len(player.queue)} dainų)",
