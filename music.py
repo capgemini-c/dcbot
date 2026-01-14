@@ -216,7 +216,7 @@ class Song:
     """Represents a song in the queue."""
     title: str
     url: str
-    local_file: str  # Path to downloaded audio file
+    local_file: Optional[str] = None  # Path to downloaded audio file (None if not downloaded yet)
     duration: Optional[int] = None
     thumbnail: Optional[str] = None
     requester: Optional[str] = None
@@ -231,12 +231,18 @@ class Song:
             return f"{hours}:{minutes:02d}:{seconds:02d}"
         return f"{minutes}:{seconds:02d}"
     
+    @property
+    def is_downloaded(self) -> bool:
+        """Check if the song has been downloaded."""
+        return self.local_file is not None and os.path.exists(self.local_file)
+    
     def cleanup(self):
         """Delete the downloaded audio file."""
         try:
             if self.local_file and os.path.exists(self.local_file):
                 os.remove(self.local_file)
                 print(f"🗑️ Cleaned up: {os.path.basename(self.local_file)}", flush=True)
+                self.local_file = None
         except Exception as e:
             print(f"⚠️ Failed to cleanup {self.local_file}: {e}", flush=True)
 
@@ -507,6 +513,8 @@ class MusicPlayer:
         self._player_task: Optional[asyncio.Task] = None
         self.now_playing_message: Optional[discord.Message] = None  # Store message to update
         self.playlist_info: dict = {'total': 0, 'downloaded': 0}  # Track playlist progress
+        self._download_buffer_size = 3  # Keep current + next 2 songs downloaded
+        self._downloading_lock = asyncio.Lock()  # Prevent concurrent buffer updates
     
     async def connect(self, channel: discord.VoiceChannel) -> bool:
         """Connect to a voice channel."""
@@ -542,6 +550,48 @@ class MusicPlayer:
         if self._player_task:
             self._player_task.cancel()
     
+    async def maintain_download_buffer(self):
+        """
+        Maintain a rolling buffer of downloaded songs.
+        Downloads current + next N songs, cleans up old ones.
+        """
+        async with self._downloading_lock:
+            # Get songs that should be downloaded (current + next N in queue)
+            songs_to_keep = []
+            
+            if self.queue.current and not self.queue.current.is_downloaded:
+                songs_to_keep.append(self.queue.current)
+            
+            # Add next N songs from queue
+            for i, song in enumerate(list(self.queue.queue)[:self._download_buffer_size - 1]):
+                if not song.is_downloaded:
+                    songs_to_keep.append(song)
+            
+            # Download any songs that aren't downloaded yet
+            for song in songs_to_keep:
+                if not song.is_downloaded:
+                    print(f"📥 Buffer: Downloading {song.title[:40]}...", flush=True)
+                    downloaded = await download_song(song.url, song.requester, timeout_seconds=90)
+                    if downloaded:
+                        song.local_file = downloaded.local_file
+                        song.duration = downloaded.duration
+                        song.thumbnail = downloaded.thumbnail
+                        print(f"✅ Buffer: Downloaded {song.title[:40]}", flush=True)
+                    else:
+                        print(f"❌ Buffer: Failed to download {song.title[:40]}", flush=True)
+            
+            # Cleanup songs beyond the buffer (keeping current + next N)
+            songs_in_buffer = []
+            if self.queue.current:
+                songs_in_buffer.append(self.queue.current)
+            songs_in_buffer.extend(list(self.queue.queue)[:self._download_buffer_size - 1])
+            
+            # Clean up songs beyond the buffer
+            for i, song in enumerate(list(self.queue.queue)[self._download_buffer_size - 1:], start=self._download_buffer_size - 1):
+                if song.is_downloaded:
+                    print(f"🗑️ Buffer: Cleaning song #{i+1} (beyond buffer): {song.title[:40]}", flush=True)
+                    song.cleanup()
+    
     def play_next(self, error=None):
         """Callback when a song finishes playing."""
         if error:
@@ -554,6 +604,18 @@ class MusicPlayer:
         if not self.voice_client or not self.voice_client.is_connected():
             print("❌ No voice client or not connected")
             return False
+        
+        # Ensure song is downloaded
+        if not song.is_downloaded:
+            print(f"⚠️ Song not downloaded yet, downloading now: {song.title}")
+            downloaded = await download_song(song.url, song.requester, timeout_seconds=90)
+            if downloaded:
+                song.local_file = downloaded.local_file
+                song.duration = downloaded.duration
+                song.thumbnail = downloaded.thumbnail
+            else:
+                print(f"❌ Failed to download song: {song.title}")
+                return False
         
         try:
             print(f"🔊 Creating FFmpeg audio source...")
@@ -590,6 +652,9 @@ class MusicPlayer:
         while True:
             self._play_next_event.clear()
             
+            # Maintain download buffer before playing next song
+            await self.maintain_download_buffer()
+            
             print("📋 Getting next song from queue...")
             song = self.queue.next()
             if not song:
@@ -613,11 +678,8 @@ class MusicPlayer:
                     )
                     embed.add_field(name="Trukmė", value=song.duration_str, inline=True)
                     
-                    # Show queue count or playlist progress
-                    if self.playlist_info['total'] > 0:
-                        queue_info = f"{len(self.queue)} + {self.playlist_info['total'] - self.playlist_info['downloaded']} kraunama"
-                    else:
-                        queue_info = str(len(self.queue))
+                    # Show queue count
+                    queue_info = str(len(self.queue))
                     embed.add_field(name="Eilėje", value=queue_info, inline=True)
                     embed.add_field(name="Užsakė", value=song.requester, inline=True)
                     
@@ -808,52 +870,39 @@ class Music(commands.Cog):
         playlist_entries = await get_playlist_entries(query)
         
         if playlist_entries:
-            # It's a playlist - download in batches
+            # It's a playlist - add all songs to queue WITHOUT downloading
             print(f"📋 Found playlist with {len(playlist_entries)} songs", flush=True)
             
-            # Set playlist tracking info
-            player.playlist_info = {'total': len(playlist_entries), 'downloaded': 0}
+            # Create Song objects without downloading (lazy loading)
+            for i, entry in enumerate(playlist_entries):
+                song = Song(
+                    title=entry['title'],
+                    url=entry['url'],
+                    local_file=None,  # Not downloaded yet
+                    requester=interaction.user.display_name
+                )
+                player.queue.add(song)
+                print(f"📋 Added to queue [{i+1}/{len(playlist_entries)}]: {song.title}", flush=True)
             
-            BATCH_SIZE = 3
+            # Show playlist added message
+            embed = discord.Embed(
+                title="📋 Playlist pridėtas į eilę",
+                description=f"Pridėta **{len(playlist_entries)}** dainų",
+                color=discord.Color.green()
+            )
+            embed.add_field(name="Pirmoji daina", value=playlist_entries[0]['title'][:50], inline=False)
+            embed.add_field(name="Eilėje", value=f"{len(player.queue)} dainos", inline=True)
+            embed.add_field(name="Užsakė", value=interaction.user.display_name, inline=True)
             
-            # Download and queue in batches of 10
-            for batch_start in range(0, len(playlist_entries), BATCH_SIZE):
-                batch_end = min(batch_start + BATCH_SIZE, len(playlist_entries))
-                batch = playlist_entries[batch_start:batch_end]
-                
-                print(f"📦 Downloading batch {batch_start//BATCH_SIZE + 1} ({batch_start+1}-{batch_end}/{len(playlist_entries)})", flush=True)
-                
-                for i, entry in enumerate(batch, start=batch_start):
-                    song = await download_song(entry['url'], interaction.user.display_name, timeout_seconds=90)
-                    if song:
-                        player.queue.add(song)
-                        player.playlist_info['downloaded'] += 1
-                        print(f"📋 Playlist [{i+1}/{len(playlist_entries)}]: {song.title}", flush=True)
-                        
-                        # Start playing on first song and show its info
-                        if i == 0:
-                            # Start player
-                            if not player.voice_client.is_playing() and (player._player_task is None or player._player_task.done()):
-                                player._player_task = asyncio.create_task(player.start_player_loop())
-                            
-                            # Show first song info (same format as single song)
-                            embed = discord.Embed(
-                                title="🎵 Pridėta į eilę",
-                                description=f"**[{song.title}]({song.url})**",
-                                color=discord.Color.green()
-                            )
-                            embed.add_field(name="Trukmė", value=song.duration_str, inline=True)
-                            embed.add_field(name="Eilėje", value=f"{len(playlist_entries)} dainos", inline=True)
-                            embed.add_field(name="Užsakė", value=song.requester, inline=True)
-                            
-                            if song.thumbnail:
-                                embed.set_thumbnail(url=song.thumbnail)
-                            
-                            view = MusicControlView(self.bot, interaction.guild.id)
-                            player.now_playing_message = await interaction.followup.send(embed=embed, view=view)
+            view = MusicControlView(self.bot, interaction.guild.id)
+            player.now_playing_message = await interaction.followup.send(embed=embed, view=view)
             
-            # Reset playlist tracking when done
-            player.playlist_info = {'total': 0, 'downloaded': 0}
+            # Start playing if not already
+            if not player.voice_client.is_playing() and (player._player_task is None or player._player_task.done()):
+                print("🎬 Starting player loop...")
+                player._player_task = asyncio.create_task(player.start_player_loop())
+            else:
+                print("⏸️ Player already running, songs queued")
         else:
             # Single song
             print("🎵 Single song, downloading...")
