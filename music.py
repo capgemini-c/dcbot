@@ -669,6 +669,12 @@ class MusicPlayer:
             
             print(f"▶️ Playing next: {song.title}")
             
+            # Check if now_playing_message reference exists
+            if self.now_playing_message:
+                print(f"📌 now_playing_message reference exists: {self.now_playing_message.id}", flush=True)
+            else:
+                print(f"⚠️ now_playing_message reference is None!", flush=True)
+            
             # Maintain download buffer in background (non-blocking)
             asyncio.create_task(self.maintain_download_buffer())
             
@@ -680,6 +686,7 @@ class MusicPlayer:
             # Update now playing message AFTER song is downloaded and playing
             if self.now_playing_message:
                 try:
+                    print(f"📝 Updating now playing message for: {song.title}", flush=True)
                     embed = discord.Embed(
                         title="🎵 Dabar groja",
                         description=f"**[{song.title}]({song.url})**",
@@ -704,8 +711,18 @@ class MusicPlayer:
                     # Keep the same view
                     view = MusicControlView(self.bot, self.guild.id)
                     await self.now_playing_message.edit(embed=embed, view=view)
+                    print(f"✅ Successfully updated now playing message", flush=True)
+                except discord.errors.NotFound:
+                    print(f"⚠️ Now playing message was deleted, cannot update", flush=True)
+                    self.now_playing_message = None
+                except discord.errors.Forbidden:
+                    print(f"⚠️ No permission to edit now playing message", flush=True)
                 except Exception as e:
-                    print(f"⚠️ Failed to update now playing message: {e}", flush=True)
+                    print(f"⚠️ Failed to update now playing message: {type(e).__name__}: {e}", flush=True)
+                    import traceback
+                    traceback.print_exc()
+            else:
+                print(f"⚠️ No now_playing_message reference exists, cannot update", flush=True)
             
             # Wait for song to finish
             print("⏳ Waiting for song to finish...")
@@ -935,6 +952,7 @@ class Music(commands.Cog):
             
             view = MusicControlView(self.bot, interaction.guild.id)
             player.now_playing_message = await interaction.followup.send(embed=embed, view=view)
+            print(f"📌 Set now_playing_message reference: {player.now_playing_message.id}", flush=True)
             
             # Start playing if not already
             if not player.voice_client.is_playing() and (player._player_task is None or player._player_task.done()):
@@ -972,6 +990,7 @@ class Music(commands.Cog):
             
             view = MusicControlView(self.bot, interaction.guild.id)
             player.now_playing_message = await interaction.followup.send(embed=embed, view=view)
+            print(f"📌 Set now_playing_message reference: {player.now_playing_message.id}", flush=True)
             print("📤 Sent embed response with controls")
             
             # Start playing if not already
