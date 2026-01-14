@@ -653,9 +653,6 @@ class MusicPlayer:
         while True:
             self._play_next_event.clear()
             
-            # Maintain download buffer before playing next song
-            await self.maintain_download_buffer()
-            
             print("📋 Getting next song from queue...")
             song = self.queue.next()
             if not song:
@@ -668,6 +665,9 @@ class MusicPlayer:
                 continue
             
             print(f"▶️ Playing next: {song.title}")
+            
+            # Maintain download buffer after getting next song (so current is correct)
+            await self.maintain_download_buffer()
             
             # Update now playing message
             if self.now_playing_message:
