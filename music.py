@@ -672,7 +672,12 @@ class MusicPlayer:
             # Maintain download buffer in background (non-blocking)
             asyncio.create_task(self.maintain_download_buffer())
             
-            # Update now playing message
+            # Start playing the song (this ensures it's downloaded and metadata is populated)
+            if not await self.play(song):
+                print("❌ play() returned False, skipping to next")
+                continue
+            
+            # Update now playing message AFTER song is downloaded and playing
             if self.now_playing_message:
                 try:
                     embed = discord.Embed(
@@ -701,10 +706,6 @@ class MusicPlayer:
                     await self.now_playing_message.edit(embed=embed, view=view)
                 except Exception as e:
                     print(f"⚠️ Failed to update now playing message: {e}", flush=True)
-            
-            if not await self.play(song):
-                print("❌ play() returned False, skipping to next")
-                continue
             
             # Wait for song to finish
             print("⏳ Waiting for song to finish...")
