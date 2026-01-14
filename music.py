@@ -1098,6 +1098,9 @@ class Music(commands.Cog):
             )
             return
         
+        # Defer the response to avoid timeout
+        await interaction.response.defer()
+        
         # Skip to position
         if player.queue.skip_to(position):
             # Stop current song to trigger next
@@ -1115,9 +1118,9 @@ class Music(commands.Cog):
             if target_song:
                 embed.add_field(name="Kita daina", value=target_song.title, inline=False)
             
-            await interaction.response.send_message(embed=embed)
+            await interaction.followup.send(embed=embed)
         else:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "❌ Nepavyko peršokti į šią poziciją!",
                 ephemeral=True
             )
