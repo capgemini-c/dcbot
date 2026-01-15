@@ -83,9 +83,7 @@ print("=" * 50, flush=True)
 import yt_dlp
 import urllib.request
 
-# ============================================
 # NordVPN SOCKS5 Proxy Configuration
-# ============================================
 print("=" * 50, flush=True)
 print("🔧 NORDVPN SOCKS5 PROXY", flush=True)
 print("=" * 50, flush=True)
@@ -234,7 +232,6 @@ class Song:
         try:
             if self.local_file and os.path.exists(self.local_file):
                 os.remove(self.local_file)
-                print(f"🗑️ Cleaned up: {os.path.basename(self.local_file)}", flush=True)
                 self.local_file = None
         except Exception as e:
             print(f"⚠️ Failed to cleanup {self.local_file}: {e}", flush=True)
@@ -334,6 +331,21 @@ def validate_skip_position(
       f"❌ Pozicija turi būti tarp 1 ir {queue_length}!"
     )
   return True, None
+
+
+def require_player(func):
+  """
+  Decorator to validate that a music player exists before command execution.
+  Automatically validates and passes the player to the decorated function.
+  """
+  async def wrapper(self, interaction: discord.Interaction, *args, **kwargs):
+    player = player_manager.get(interaction.guild.id)
+    is_valid, error_msg = validate_player_exists(player, interaction.guild.id)
+    if not is_valid:
+      await interaction.response.send_message(error_msg, ephemeral=True)
+      return
+    return await func(self, interaction, *args, player=player, **kwargs)
+  return wrapper
 
 
 class EmbedBuilder:
@@ -573,27 +585,6 @@ class URLValidator:
     return 'list=' in url or '/playlist?' in url
 
 
-# Backward compatibility - keep old function names
-def is_spotify_url(url: str) -> bool:
-  """Check if URL is a Spotify link. (deprecated: use URLValidator.is_spotify)"""
-  return URLValidator.is_spotify(url)
-
-
-def is_soundcloud_url(url: str) -> bool:
-  """Check if URL is a SoundCloud link. (deprecated: use URLValidator.is_soundcloud)"""
-  return URLValidator.is_soundcloud(url)
-
-
-def is_youtube_url(url: str) -> bool:
-  """Check if URL is a YouTube link. (deprecated: use URLValidator.is_youtube)"""
-  return URLValidator.is_youtube(url)
-
-
-def is_playlist_url(url: str) -> bool:
-  """Check if URL contains a playlist. (deprecated: use URLValidator.is_playlist)"""
-  return URLValidator.is_playlist(url)
-
-
 async def extract_spotify_query(url: str) -> Optional[str]:
     """
     Extract track name and artist from Spotify URL for YouTube search.
@@ -651,7 +642,7 @@ async def get_playlist_entries(query: str) -> List[dict]:
   Returns list of video info dicts with 'url' and 'title'.
   """
   # Early return: Only process playlist URLs
-  if not is_playlist_url(query):
+  if not URLValidator.is_playlist(query):
     return []
   
   try:
@@ -789,7 +780,7 @@ async def get_song_info(query: str, requester: str, timeout_seconds: int = 120) 
     For playlists, use get_playlist_entries() first.
     """
     # Handle Spotify URLs - convert to YouTube search
-    if is_spotify_url(query):
+    if URLValidator.is_spotify(query):
         search_query = await extract_spotify_query(query)
         if search_query:
             query = f"ytsearch:{search_query}"
@@ -873,7 +864,6 @@ class DownloadBufferManager:
             for song in songs_to_download:
                 if not song.is_downloaded and not self.is_downloading(song):
                     self.mark_downloading(song)
-                    print(f"📥 Buffer: Downloading {song.title[:40]}...", flush=True)
                     
                     try:
                         downloaded = await download_song(song.url, song.requester, timeout_seconds=90)
@@ -881,7 +871,6 @@ class DownloadBufferManager:
                             song.local_file = downloaded.local_file
                             song.duration = downloaded.duration
                             song.thumbnail = downloaded.thumbnail
-                            print(f"✅ Buffer: Downloaded {song.title[:40]}", flush=True)
                         else:
                             print(f"❌ Buffer: Failed to download {song.title[:40]}", flush=True)
                     finally:
@@ -889,8 +878,7 @@ class DownloadBufferManager:
             
             # Cleanup songs beyond buffer
             songs_to_cleanup = self.get_songs_to_cleanup(queue)
-            for i, song in enumerate(songs_to_cleanup):
-                print(f"🗑️ Buffer: Cleaning song beyond buffer: {song.title[:40]}", flush=True)
+            for song in songs_to_cleanup:
                 song.cleanup()
 
 
@@ -912,24 +900,19 @@ class MusicPlayer:
     async def connect(self, channel: discord.VoiceChannel) -> bool:
         """Connect to a voice channel."""
         try:
-            print(f"🔊 Attempting to connect to voice channel: {channel.name} ({channel.id})")
-            
             # Check if already connected to this guild
             existing_vc = discord.utils.get(self.bot.voice_clients, guild=self.guild)
             if existing_vc:
-                print(f"📍 Already connected to: {existing_vc.channel.name}")
                 if existing_vc.channel.id != channel.id:
-                    print(f"🔄 Moving to: {channel.name}")
                     await existing_vc.move_to(channel)
                 self.voice_client = existing_vc
             else:
-                print(f"🔌 Connecting fresh to: {channel.name}")
                 self.voice_client = await channel.connect()
             
-            print(f"✅ Connected to voice channel: {channel.name}")
+            print(f"✅ Connected to voice channel: {channel.name}", flush=True)
             return True
         except Exception as e:
-            print(f"❌ Error connecting to voice channel: {type(e).__name__}: {e}")
+            print(f"❌ Error connecting to voice channel: {type(e).__name__}: {e}", flush=True)
             import traceback
             traceback.print_exc()
             return False
@@ -947,41 +930,103 @@ class MusicPlayer:
         """Maintain a rolling buffer of downloaded songs (delegates to buffer manager)."""
         await self.buffer_manager.maintain_buffer(self.queue)
     
+    def _build_now_playing_embed(self, song: Song) -> discord.Embed:
+        """Build embed for now playing message with queue info."""
+        embed = EmbedBuilder.now_playing(song)
+        embed.set_field_at(1, name="Eilėje", value=str(len(self.queue)), inline=True)
+        
+        # Show downloading status
+        if self.buffer_manager.get_downloading_count() > 0:
+            downloading_count = self.buffer_manager.get_downloading_count()
+            embed.add_field(
+                name="📥 Kraunama",
+                value=f"{downloading_count} daina{'s' if downloading_count > 1 else ''}",
+                inline=True
+            )
+        
+        return embed
+    
+    async def _update_now_playing_message(self, song: Song) -> None:
+        """Update now playing message - edit if it's the last message, otherwise recreate at bottom."""
+        if not self.text_channel:
+            return
+        
+        embed = self._build_now_playing_embed(song)
+        view = MusicControlView(self.bot, self.guild.id)
+        
+        # Check if our message is the last one in the channel
+        is_last_message = False
+        if self.now_playing_message:
+            try:
+                # Fetch the last message from the channel
+                last_message = None
+                async for message in self.text_channel.history(limit=1):
+                    last_message = message
+                    break
+                
+                # If our message is the last one, just edit it
+                if last_message and last_message.id == self.now_playing_message.id:
+                    is_last_message = True
+                    await self.now_playing_message.edit(embed=embed, view=view)
+                    return
+            except discord.errors.NotFound:
+                # Message was deleted, fall through to create new one
+                self.now_playing_message = None
+            except Exception as e:
+                print(f"⚠️ Failed to check/edit message: {type(e).__name__}: {e}", flush=True)
+        
+        # If we reach here, either:
+        # 1. There's no existing message
+        # 2. The message is not the last one in chat
+        # 3. Editing failed
+        # So we delete the old one (if it exists) and create a new one at the bottom
+        
+        if self.now_playing_message and not is_last_message:
+            try:
+                await self.now_playing_message.delete()
+            except discord.errors.NotFound:
+                pass
+            except Exception as e:
+                print(f"⚠️ Failed to delete old message: {type(e).__name__}: {e}", flush=True)
+            finally:
+                self.now_playing_message = None
+        
+        # Create new message at the bottom
+        try:
+            self.now_playing_message = await self.text_channel.send(embed=embed, view=view)
+        except Exception as e:
+            print(f"⚠️ Failed to create new now playing message: {type(e).__name__}: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+    
     def play_next(self, error: Optional[Exception] = None) -> None:
         """Callback when a song finishes playing."""
         if error:
-            print(f"Player error: {error}")
+            print(f"Player error: {error}", flush=True)
         self._play_next_event.set()
     
     async def play(self, song: Song) -> bool:
         """Play a song."""
-        print(f"🎵 play() called for: {song.title}")
         if not self.voice_client or not self.voice_client.is_connected():
-            print("❌ No voice client or not connected")
             return False
         
         # Ensure song is downloaded
         if not song.is_downloaded:
-            print(f"⚠️ Song not downloaded yet, downloading now: {song.title}")
             downloaded = await download_song(song.url, song.requester, timeout_seconds=90)
             if downloaded:
                 song.local_file = downloaded.local_file
                 song.duration = downloaded.duration
                 song.thumbnail = downloaded.thumbnail
             else:
-                print(f"❌ Failed to download song: {song.title}")
+                print(f"❌ Failed to download song: {song.title}", flush=True)
                 return False
         
         try:
-            print(f"🔊 Creating FFmpeg audio source...")
-            print(f"   Local file: {song.local_file}")
-            
             if not os.path.exists(song.local_file):
-                print(f"❌ Audio file not found: {song.local_file}")
+                print(f"❌ Audio file not found: {song.local_file}", flush=True)
                 return False
             
             source = discord.FFmpegPCMAudio(song.local_file, **FFMPEG_OPTIONS)
-            print(f"✅ FFmpeg source created, starting playback...")
             
             # Wrap callback to cleanup after playback
             def after_play(error):
@@ -992,10 +1037,9 @@ class MusicPlayer:
             
             self.voice_client.play(source, after=after_play)
             self.queue.current = song
-            print(f"✅ Playback started for: {song.title}")
             return True
         except Exception as e:
-            print(f"❌ Error playing song: {type(e).__name__}: {e}")
+            print(f"❌ Error playing song: {type(e).__name__}: {e}", flush=True)
             import traceback
             traceback.print_exc()
             song.cleanup()  # Clean up on error too
@@ -1003,85 +1047,30 @@ class MusicPlayer:
     
     async def start_player_loop(self):
         """Main player loop - plays songs from queue."""
-        print("🔄 Player loop started")
         while True:
             self._play_next_event.clear()
             
-            print("📋 Getting next song from queue...")
             song = self.queue.next()
             if not song:
-                print("📭 No song in queue, checking if empty...")
                 # Queue empty, wait for new songs
                 await asyncio.sleep(0.5)
                 if self.queue.is_empty():
-                    print("🛑 Queue empty, exiting player loop")
+                    print("🛑 Queue empty, exiting player loop", flush=True)
                     break
                 continue
-            
-            print(f"▶️ Playing next: {song.title}")
-            
-            # Check if now_playing_message reference exists
-            if self.now_playing_message:
-                print(f"📌 now_playing_message reference exists: {self.now_playing_message.id}", flush=True)
-            else:
-                print(f"⚠️ now_playing_message reference is None!", flush=True)
             
             # Maintain download buffer in background (non-blocking)
             asyncio.create_task(self.maintain_download_buffer())
             
             # Start playing the song (this ensures it's downloaded and metadata is populated)
             if not await self.play(song):
-                print("❌ play() returned False, skipping to next")
                 continue
             
-            # Delete old message and create new one at bottom of chat
-            if self.now_playing_message:
-                try:
-                    print(f"🗑️ Deleting old now playing message", flush=True)
-                    await self.now_playing_message.delete()
-                    print(f"✅ Old message deleted", flush=True)
-                except discord.errors.NotFound:
-                    print(f"⚠️ Old message already deleted", flush=True)
-                except Exception as e:
-                    print(f"⚠️ Failed to delete old message: {type(e).__name__}: {e}", flush=True)
-                finally:
-                    self.now_playing_message = None
-            
-            # Create new now playing message at bottom of chat
-            if self.text_channel:
-                try:
-                    print(f"📝 Creating new now playing message for: {song.title}", flush=True)
-                    
-                    # Use EmbedBuilder for consistent formatting
-                    embed = EmbedBuilder.now_playing(song)
-                    
-                    # Override some fields for in-progress display
-                    embed.set_field_at(1, name="Eilėje", value=str(len(self.queue)), inline=True)
-                    
-                    # Show downloading status
-                    if self.buffer_manager.get_downloading_count() > 0:
-                        downloading_count = self.buffer_manager.get_downloading_count()
-                        embed.add_field(
-                            name="📥 Kraunama", 
-                            value=f"{downloading_count} daina{'s' if downloading_count > 1 else ''}", 
-                            inline=True
-                        )
-                    
-                    # Send new message with controls
-                    view = MusicControlView(self.bot, self.guild.id)
-                    self.now_playing_message = await self.text_channel.send(embed=embed, view=view)
-                    print(f"✅ Created new now playing message in #{self.text_channel.name}", flush=True)
-                except Exception as e:
-                    print(f"⚠️ Failed to create new now playing message: {type(e).__name__}: {e}", flush=True)
-                    import traceback
-                    traceback.print_exc()
-            else:
-                print(f"⚠️ No text channel stored, cannot send now playing message", flush=True)
+            # Update now playing message (delete old, create new at bottom)
+            await self._update_now_playing_message(song)
             
             # Wait for song to finish
-            print("⏳ Waiting for song to finish...")
             await self._play_next_event.wait()
-            print("✅ Song finished")
     
     def skip(self) -> bool:
         """Skip the current song."""
@@ -1157,63 +1146,48 @@ class MusicControlView(discord.ui.View):
     
     @discord.ui.button(label="⏸️ Pause", style=discord.ButtonStyle.secondary, custom_id="music_pause")
     async def pause_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        print(f"🎛️ Pause button clicked by {interaction.user.display_name}", flush=True)
         player = self.get_player()
         if player and player.voice_client:
             if player.voice_client.is_playing():
-                print("⏸️ Pausing playback", flush=True)
                 player.voice_client.pause()
                 button.label = "▶️ Resume"
                 await interaction.response.edit_message(view=self)
             elif player.voice_client.is_paused():
-                print("▶️ Resuming playback", flush=True)
                 player.voice_client.resume()
                 button.label = "⏸️ Pause"
                 await interaction.response.edit_message(view=self)
             else:
-                print("⚠️ Not playing or paused, deferring", flush=True)
                 await interaction.response.defer()
         else:
-            print("⚠️ No player or voice client, deferring", flush=True)
             await interaction.response.defer()
     
     @discord.ui.button(label="⏭️ Skip", style=discord.ButtonStyle.primary, custom_id="music_skip")
     async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        print(f"⏭️ Skip button clicked by {interaction.user.display_name}", flush=True)
         player = self.get_player()
         if player and player.skip():
-            print("✅ Skipped to next song", flush=True)
             await interaction.response.send_message("⏭️ Praleidžiama...", ephemeral=True, delete_after=3)
         else:
-            print("⚠️ Nothing to skip", flush=True)
             await interaction.response.send_message("❌ Nėra ką praleisti", ephemeral=True, delete_after=3)
     
     @discord.ui.button(label="⏹️ Stop", style=discord.ButtonStyle.danger, custom_id="music_stop")
     async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        print(f"⏹️ Stop button clicked by {interaction.user.display_name}", flush=True)
         player = self.get_player()
         if player:
-            print("🛑 Stopping playback and disconnecting", flush=True)
             player.stop()
             if player.voice_client:
                 await player.voice_client.disconnect()
             await interaction.response.send_message("⏹️ Muzika sustabdyta", ephemeral=True, delete_after=3)
         else:
-            print("⚠️ No player found, deferring", flush=True)
             await interaction.response.defer()
     
     @discord.ui.button(label="📋 Queue", style=discord.ButtonStyle.secondary, custom_id="music_queue")
     async def queue_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        print(f"📋 Queue button clicked by {interaction.user.display_name}", flush=True)
-        
         # Defer immediately to prevent timeout
         await interaction.response.defer(ephemeral=True)
-        print("⏳ Queue button deferred, building embed...", flush=True)
         
         player = self.get_player()
         
         if not player:
-            print("⚠️ No player found", flush=True)
             await interaction.followup.send("📭 Nėra aktyvaus grotuvo", ephemeral=True)
             return
         
@@ -1230,7 +1204,6 @@ class MusicControlView(discord.ui.View):
                     inline=False
                 )
         
-        print(f"📤 Sending queue embed (current: {player.queue.current is not None}, queue: {len(player.queue)})", flush=True)
         await interaction.followup.send(embed=embed, ephemeral=True)
 
 
@@ -1244,6 +1217,58 @@ class Music(commands.Cog):
     
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+    
+    async def _add_playlist_to_queue(
+        self,
+        player: MusicPlayer,
+        entries: List[dict],
+        requester: str,
+        interaction: discord.Interaction
+    ) -> None:
+        """Add playlist entries to queue without downloading."""
+        print(f"📋 Found playlist with {len(entries)} songs", flush=True)
+        
+        # Create Song objects without downloading (lazy loading)
+        for entry in entries:
+            song = Song(
+                title=entry['title'],
+                url=entry['url'],
+                local_file=None,
+                requester=requester
+            )
+            player.queue.add(song)
+        
+        # Show playlist added message
+        embed = EmbedBuilder.playlist_added(entries, len(player.queue), requester)
+        view = MusicControlView(self.bot, interaction.guild.id)
+        player.now_playing_message = await interaction.followup.send(embed=embed, view=view)
+    
+    async def _add_single_song_to_queue(
+        self,
+        player: MusicPlayer,
+        query: str,
+        requester: str,
+        interaction: discord.Interaction
+    ) -> Optional[Song]:
+        """Download and add single song to queue."""
+        song = await get_song_info(query, requester)
+        if not song:
+            return None
+        
+        # Add to queue
+        player.queue.add(song)
+        
+        # Create embed with control buttons
+        embed = EmbedBuilder.song_added(song, len(player.queue))
+        view = MusicControlView(self.bot, interaction.guild.id)
+        player.now_playing_message = await interaction.followup.send(embed=embed, view=view)
+        
+        return song
+    
+    def _start_player_if_needed(self, player: MusicPlayer) -> None:
+        """Start player loop if not already playing."""
+        if not player.voice_client.is_playing() and (player._player_task is None or player._player_task.done()):
+            player._player_task = asyncio.create_task(player.start_player_loop())
     
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
@@ -1270,7 +1295,7 @@ class Music(commands.Cog):
                 human_members = [m for m in channel.members if not m.bot]
                 
                 if len(human_members) == 0:
-                    print(f"🔌 Auto-disconnecting from '{channel.name}' - channel empty")
+                    print(f"🔌 Auto-disconnecting from '{channel.name}' - channel empty", flush=True)
                     player = player_manager.get(member.guild.id)
                     if player:
                         await player.disconnect()
@@ -1278,110 +1303,46 @@ class Music(commands.Cog):
                         player_manager.remove(member.guild.id)
     
     @app_commands.command(name="play", description="Paleisti dainą arba playlist'ą iš YouTube, SoundCloud arba Spotify")
-    @app_commands.describe(query="YouTube/SoundCloud/Spotify nuoroda arba paieškos užklausa")
+    @app_commands.describe(query="YouTube/SoundCloud nuoroda arba paieškos užklausa (Spotify nuorodų nepalaiko)")
     async def play(self, interaction: discord.Interaction, query: str):
         """Play a song or playlist from YouTube, SoundCloud, or Spotify."""
-        print(f"▶️ /play command received from {interaction.user.display_name}: {query}")
-        
         # Validate user is in voice channel
         is_valid, error_msg = validate_user_in_voice(interaction)
         if not is_valid:
-            print("❌ User not in voice channel")
             await interaction.response.send_message(error_msg, ephemeral=True)
             return
         
-        print(f"📍 User is in voice channel: {interaction.user.voice.channel.name}")
         await interaction.response.defer()
-        print("⏳ Response deferred")
         
         voice_channel = interaction.user.voice.channel
         player = get_player(self.bot, interaction.guild)
-        print(f"🎮 Got player for guild: {interaction.guild.name}")
         
         # Store text channel for sending messages
         player.text_channel = interaction.channel
-        print(f"💬 Stored text channel: #{interaction.channel.name}", flush=True)
         
         # Connect to voice channel
-        print(f"🔌 Attempting to connect to: {voice_channel.name}")
         if not await player.connect(voice_channel):
-            print("❌ Failed to connect to voice channel")
             await interaction.followup.send("❌ Nepavyko prisijungti prie voice kanalo!")
             return
-        
-        print("✅ Connected to voice channel, checking for playlist...")
         
         # Check if it's a playlist
         playlist_entries = await get_playlist_entries(query)
         
         if playlist_entries:
-            # It's a playlist - add all songs to queue WITHOUT downloading
-            print(f"📋 Found playlist with {len(playlist_entries)} songs", flush=True)
-            
-            # Create Song objects without downloading (lazy loading)
-            for i, entry in enumerate(playlist_entries):
-                song = Song(
-                    title=entry['title'],
-                    url=entry['url'],
-                    local_file=None,  # Not downloaded yet
-                    requester=interaction.user.display_name
-                )
-                player.queue.add(song)
-                print(f"📋 Added to queue [{i+1}/{len(playlist_entries)}]: {song.title}", flush=True)
-            
-            # Show playlist added message
-            embed = EmbedBuilder.playlist_added(
-              playlist_entries,
-              len(player.queue),
-              interaction.user.display_name
-            )
-            
-            view = MusicControlView(self.bot, interaction.guild.id)
-            player.now_playing_message = await interaction.followup.send(embed=embed, view=view)
-            print(f"📌 Set now_playing_message reference: {player.now_playing_message.id}", flush=True)
-            
-            # Start playing if not already
-            if not player.voice_client.is_playing() and (player._player_task is None or player._player_task.done()):
-                print("🎬 Starting player loop...")
-                player._player_task = asyncio.create_task(player.start_player_loop())
-            else:
-                print("⏸️ Player already running, songs queued")
+            await self._add_playlist_to_queue(player, playlist_entries, interaction.user.display_name, interaction)
         else:
-            # Single song
-            print("🎵 Single song, downloading...")
-            song = await get_song_info(query, interaction.user.display_name)
+            song = await self._add_single_song_to_queue(player, query, interaction.user.display_name, interaction)
             if not song:
-                print("❌ Failed to get song info")
                 await interaction.followup.send("❌ Nepavyko rasti dainos. Patikrink nuorodą arba pabandyk kitą paiešką.")
                 return
-            
-            print(f"🎵 Got song: {song.title} ({song.duration_str})")
-            
-            # Add to queue
-            player.queue.add(song)
-            print(f"📋 Added to queue. Queue length: {len(player.queue)}")
-            
-            # Create embed with control buttons using EmbedBuilder
-            embed = EmbedBuilder.song_added(song, len(player.queue))
-            
-            view = MusicControlView(self.bot, interaction.guild.id)
-            player.now_playing_message = await interaction.followup.send(embed=embed, view=view)
-            print(f"📌 Set now_playing_message reference: {player.now_playing_message.id}", flush=True)
-            print("📤 Sent embed response with controls")
-            
-            # Start playing if not already
-            print(f"🔍 Checking if should start playing: is_playing={player.voice_client.is_playing() if player.voice_client else 'no client'}, task={player._player_task}")
-            if not player.voice_client.is_playing() and (player._player_task is None or player._player_task.done()):
-                print("🎬 Starting player loop...")
-                player._player_task = asyncio.create_task(player.start_player_loop())
-            else:
-                print("⏸️ Player already running, song queued")
+        
+        # Start playing if not already
+        self._start_player_if_needed(player)
     
     @app_commands.command(name="testplay", description="Test command - plays Rick Astley")
     async def testplay(self, interaction: discord.Interaction):
         """Test command that plays a known YouTube video."""
         TEST_URL = "https://www.youtube.com/watch?v=4kHl4FoK1Ys"
-        print(f"🧪 /testplay command received from {interaction.user.display_name}", flush=True)
         
         # Validate user is in voice channel
         is_valid, error_msg = validate_user_in_voice(interaction)
@@ -1401,16 +1362,12 @@ class Music(commands.Cog):
         if not await player.connect(voice_channel):
             await interaction.followup.send("❌ Nepavyko prisijungti prie voice kanalo!")
             return
-        
-        print(f"🧪 Testing with URL: {TEST_URL}", flush=True)
         
         # Get song info
         song = await get_song_info(TEST_URL, interaction.user.display_name)
         if not song:
             await interaction.followup.send("❌ Test failed - nepavyko gauti dainos info.")
             return
-        
-        print(f"🧪 Got song: {song.title}", flush=True)
         
         # Add to queue
         player.queue.add(song)
@@ -1422,15 +1379,9 @@ class Music(commands.Cog):
             player._player_task = asyncio.create_task(player.start_player_loop())
     
     @app_commands.command(name="stop", description="Sustabdyti muziką ir išvalyti eilę")
-    async def stop(self, interaction: discord.Interaction):
+    @require_player
+    async def stop(self, interaction: discord.Interaction, player: 'MusicPlayer'):
         """Stop playback and clear the queue."""
-        player = player_manager.get(interaction.guild.id)
-        
-        is_valid, error_msg = validate_player_exists(player, interaction.guild.id)
-        if not is_valid:
-            await interaction.response.send_message(error_msg, ephemeral=True)
-            return
-        
         await player.disconnect()
         
         await interaction.response.send_message(embed=EmbedBuilder.stopped())
@@ -1439,15 +1390,9 @@ class Music(commands.Cog):
         player_manager.remove(interaction.guild.id)
     
     @app_commands.command(name="skip", description="Praleisti dabartinę dainą")
-    async def skip(self, interaction: discord.Interaction):
+    @require_player
+    async def skip(self, interaction: discord.Interaction, player: 'MusicPlayer'):
         """Skip the current song."""
-        player = player_manager.get(interaction.guild.id)
-        
-        is_valid, error_msg = validate_player_exists(player, interaction.guild.id)
-        if not is_valid:
-            await interaction.response.send_message(error_msg, ephemeral=True)
-            return
-        
         if not player.voice_client.is_playing():
             await interaction.response.send_message(
                 "❌ Šiuo metu niekas negroja!",
@@ -1464,15 +1409,9 @@ class Music(commands.Cog):
     
     @app_commands.command(name="skipto", description="Peršokti į konkrečią dainą eilėje")
     @app_commands.describe(position="Dainos numeris eilėje (1, 2, 3...)")
-    async def skipto(self, interaction: discord.Interaction, position: int):
+    @require_player
+    async def skipto(self, interaction: discord.Interaction, position: int, player: 'MusicPlayer'):
         """Skip to a specific position in the queue."""
-        player = player_manager.get(interaction.guild.id)
-        
-        is_valid, error_msg = validate_player_exists(player, interaction.guild.id)
-        if not is_valid:
-            await interaction.response.send_message(error_msg, ephemeral=True)
-            return
-        
         is_valid, error_msg = validate_skip_position(position, len(player.queue))
         if not is_valid:
             await interaction.response.send_message(error_msg, ephemeral=True)
@@ -1499,9 +1438,8 @@ class Music(commands.Cog):
                 await asyncio.sleep(10)
                 try:
                     await message.delete()
-                    print(f"🗑️ Deleted skipto message after 10s", flush=True)
                 except discord.errors.NotFound:
-                    print(f"⚠️ Skipto message already deleted", flush=True)
+                    pass
                 except Exception as e:
                     print(f"⚠️ Failed to delete skipto message: {e}", flush=True)
             else:
@@ -1530,11 +1468,10 @@ class Music(commands.Cog):
         await interaction.response.send_message(embed=EmbedBuilder.queue(player))
     
     @app_commands.command(name="nowplaying", description="Rodyti dabartinę dainą")
-    async def nowplaying(self, interaction: discord.Interaction):
+    @require_player
+    async def nowplaying(self, interaction: discord.Interaction, player: 'MusicPlayer'):
         """Show the currently playing song."""
-        player = player_manager.get(interaction.guild.id)
-        
-        if not player or not player.queue.current:
+        if not player.queue.current:
             await interaction.response.send_message(
                 "❌ Šiuo metu niekas negroja!",
                 ephemeral=True
