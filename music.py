@@ -82,10 +82,7 @@ print("=" * 50, flush=True)
 # yt-dlp for audio extraction
 import yt_dlp
 import urllib.request
-import json as json_lib
 
-# ============================================
-# NordVPN SOCKS5 Proxy Configuration
 # ============================================
 # NordVPN SOCKS5 Proxy Configuration
 # ============================================
@@ -283,9 +280,6 @@ class MusicQueue:
     def clear(self):
         self.queue.clear()
         self.current = None
-    
-    def is_empty(self) -> bool:
-        return len(self.queue) == 0
     
     def __len__(self):
         return len(self.queue)
