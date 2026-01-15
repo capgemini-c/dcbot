@@ -737,8 +737,51 @@ class MusicPlayer:
             self.voice_client.stop()
 
 
-# Store players per guild
-players: dict[int, MusicPlayer] = {}
+class PlayerManager:
+    """Manages MusicPlayer instances per guild."""
+    
+    def __init__(self):
+        self._players: dict[int, MusicPlayer] = {}
+    
+    def get(self, guild_id: int) -> Optional[MusicPlayer]:
+        """Get player for a guild, returns None if doesn't exist."""
+        return self._players.get(guild_id)
+    
+    def create_player(self, bot: commands.Bot, guild: discord.Guild) -> MusicPlayer:
+        """Create a new player for a guild."""
+        player = MusicPlayer(bot, guild)
+        self._players[guild.id] = player
+        return player
+    
+    def get_or_create(self, bot: commands.Bot, guild: discord.Guild) -> MusicPlayer:
+        """Get existing player or create new one if doesn't exist."""
+        if guild.id not in self._players:
+            return self.create_player(bot, guild)
+        
+        # Sync voice client if bot is already connected
+        player = self._players[guild.id]
+        existing_vc = discord.utils.get(bot.voice_clients, guild=guild)
+        if existing_vc and player.voice_client != existing_vc:
+            player.voice_client = existing_vc
+        
+        return player
+    
+    def remove(self, guild_id: int) -> None:
+        """Remove player for a guild."""
+        if guild_id in self._players:
+            del self._players[guild_id]
+    
+    def has_player(self, guild_id: int) -> bool:
+        """Check if player exists for a guild."""
+        return guild_id in self._players
+    
+    def count(self) -> int:
+        """Get count of active players."""
+        return len(self._players)
+
+
+# Global player manager instance
+player_manager = PlayerManager()
 
 
 class MusicControlView(discord.ui.View):
@@ -750,7 +793,7 @@ class MusicControlView(discord.ui.View):
         self.guild_id = guild_id
     
     def get_player(self) -> Optional[MusicPlayer]:
-        return players.get(self.guild_id)
+        return player_manager.get(self.guild_id)
     
     @discord.ui.button(label="⏸️ Pause", style=discord.ButtonStyle.secondary, custom_id="music_pause")
     async def pause_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -875,16 +918,7 @@ class MusicControlView(discord.ui.View):
 
 def get_player(bot: commands.Bot, guild: discord.Guild) -> MusicPlayer:
     """Get or create a music player for a guild."""
-    if guild.id not in players:
-        players[guild.id] = MusicPlayer(bot, guild)
-    
-    # Sync voice client if bot is already connected
-    player = players[guild.id]
-    existing_vc = discord.utils.get(bot.voice_clients, guild=guild)
-    if existing_vc and player.voice_client != existing_vc:
-        player.voice_client = existing_vc
-    
-    return player
+    return player_manager.get_or_create(bot, guild)
 
 
 class Music(commands.Cog):
@@ -919,12 +953,11 @@ class Music(commands.Cog):
                 
                 if len(human_members) == 0:
                     print(f"🔌 Auto-disconnecting from '{channel.name}' - channel empty")
-                    player = players.get(member.guild.id)
+                    player = player_manager.get(member.guild.id)
                     if player:
                         await player.disconnect()
                         # Clean up player
-                        if member.guild.id in players:
-                            del players[member.guild.id]
+                        player_manager.remove(member.guild.id)
     
     @app_commands.command(name="play", description="Paleisti dainą arba playlist'ą iš YouTube, SoundCloud arba Spotify")
     @app_commands.describe(query="YouTube/SoundCloud/Spotify nuoroda arba paieškos užklausa")
@@ -1088,7 +1121,7 @@ class Music(commands.Cog):
     @app_commands.command(name="stop", description="Sustabdyti muziką ir išvalyti eilę")
     async def stop(self, interaction: discord.Interaction):
         """Stop playback and clear the queue."""
-        player = players.get(interaction.guild.id)
+        player = player_manager.get(interaction.guild.id)
         
         if not player or not player.voice_client:
             await interaction.response.send_message(
@@ -1107,13 +1140,12 @@ class Music(commands.Cog):
         await interaction.response.send_message(embed=embed)
         
         # Clean up player
-        if interaction.guild.id in players:
-            del players[interaction.guild.id]
+        player_manager.remove(interaction.guild.id)
     
     @app_commands.command(name="skip", description="Praleisti dabartinę dainą")
     async def skip(self, interaction: discord.Interaction):
         """Skip the current song."""
-        player = players.get(interaction.guild.id)
+        player = player_manager.get(interaction.guild.id)
         
         if not player or not player.voice_client:
             await interaction.response.send_message(
@@ -1151,7 +1183,7 @@ class Music(commands.Cog):
     @app_commands.describe(position="Dainos numeris eilėje (1, 2, 3...)")
     async def skipto(self, interaction: discord.Interaction, position: int):
         """Skip to a specific position in the queue."""
-        player = players.get(interaction.guild.id)
+        player = player_manager.get(interaction.guild.id)
         
         if not player or not player.voice_client:
             await interaction.response.send_message(
@@ -1204,7 +1236,7 @@ class Music(commands.Cog):
     @app_commands.command(name="queue", description="Rodyti dainų eilę")
     async def queue_cmd(self, interaction: discord.Interaction):
         """Show the current queue."""
-        player = players.get(interaction.guild.id)
+        player = player_manager.get(interaction.guild.id)
         
         embed = discord.Embed(
             title="🎶 Dainų eilė",
@@ -1262,7 +1294,7 @@ class Music(commands.Cog):
     @app_commands.command(name="nowplaying", description="Rodyti dabartinę dainą")
     async def nowplaying(self, interaction: discord.Interaction):
         """Show the currently playing song."""
-        player = players.get(interaction.guild.id)
+        player = player_manager.get(interaction.guild.id)
         
         if not player or not player.queue.current:
             await interaction.response.send_message(
