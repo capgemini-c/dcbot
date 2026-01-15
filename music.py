@@ -178,8 +178,9 @@ YTDL_OPTIONS = {
     'nocheckcertificate': True,
     'ignoreerrors': True,  # Skip unavailable videos in playlist
     'logtostderr': False,
-    'quiet': False,
-    'no_warnings': False,
+    'quiet': True,  # Suppress yt-dlp output
+    'no_warnings': True,  # Suppress warnings
+    'noprogress': True,  # Suppress progress bars
     'default_search': 'ytsearch',
     'source_address': '0.0.0.0',
     'extract_flat': 'in_playlist',  # Get playlist info without downloading each video
