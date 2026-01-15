@@ -100,13 +100,14 @@ class TestEdgeCases:
         assert is_youtube_url("") is False
         assert is_playlist_url("") is False
     
-    def test_url_detection_case_sensitive(self):
-        """Test that URL detection is case sensitive (current behavior)."""
-        # Note: Current implementation uses 'in' operator which is case-sensitive
+    def test_url_detection_case_insensitive(self):
+        """Test that URL detection is now case-insensitive (improved behavior)."""
         assert is_youtube_url("https://www.youtube.com/watch?v=abc") is True
-        assert is_youtube_url("https://WWW.YOUTUBE.COM/watch?v=abc") is False  # Case-sensitive
+        assert is_youtube_url("https://WWW.YOUTUBE.COM/watch?v=abc") is True  # Now case-insensitive
         assert is_spotify_url("https://spotify.com/track/abc") is True
+        assert is_spotify_url("https://SPOTIFY.com/track/abc") is True  # Now case-insensitive
         assert is_soundcloud_url("https://soundcloud.com/track") is True
+        assert is_soundcloud_url("https://SOUNDCLOUD.com/track") is True  # Now case-insensitive
     
     def test_url_detection_with_extra_parameters(self):
         """Test URL detection works with query parameters."""

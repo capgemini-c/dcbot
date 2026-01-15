@@ -221,13 +221,8 @@ class Song:
     
     @property
     def duration_str(self) -> str:
-        if not self.duration:
-            return "Unknown"
-        minutes, seconds = divmod(self.duration, 60)
-        hours, minutes = divmod(minutes, 60)
-        if hours:
-            return f"{hours}:{minutes:02d}:{seconds:02d}"
-        return f"{minutes}:{seconds:02d}"
+      """Return formatted duration string."""
+      return format_duration(self.duration)
     
     @property
     def is_downloaded(self) -> bool:
@@ -247,6 +242,266 @@ class Song:
 
 class MusicQueue:
     """Manages the song queue for a guild."""
+
+
+def format_duration(seconds: Optional[int]) -> str:
+  """
+  Format duration in seconds to human-readable string.
+  
+  Args:
+    seconds: Duration in seconds, or None if unknown
+    
+  Returns:
+    Formatted string like "3:45" or "1:23:45", or "Unknown" if None
+  """
+  if not seconds:
+    return "Unknown"
+  
+  minutes, secs = divmod(seconds, 60)
+  hours, mins = divmod(minutes, 60)
+  
+  if hours:
+    return f"{hours}:{mins:02d}:{secs:02d}"
+  return f"{mins}:{secs:02d}"
+
+
+def validate_user_in_voice(interaction: discord.Interaction) -> tuple[bool, Optional[str]]:
+  """
+  Validate that user is connected to a voice channel.
+  
+  Args:
+    interaction: Discord interaction from command
+    
+  Returns:
+    Tuple of (is_valid, error_message). If valid, error_message is None.
+  """
+  if not interaction.user.voice or not interaction.user.voice.channel:
+    return False, "❌ Tu turi būti voice kanale, kad galėtum groti muziką!"
+  return True, None
+
+
+def validate_player_exists(
+  player: Optional['MusicPlayer'],
+  guild_id: int
+) -> tuple[bool, Optional[str]]:
+  """
+  Validate that a music player exists for the guild.
+  
+  Args:
+    player: The MusicPlayer instance (or None)
+    guild_id: Guild ID for logging
+    
+  Returns:
+    Tuple of (is_valid, error_message). If valid, error_message is None.
+  """
+  if not player or not player.voice_client:
+    return False, "❌ Botas nėra prijungtas prie voice kanalo!"
+  return True, None
+
+
+def validate_queue_not_empty(player: 'MusicPlayer') -> tuple[bool, Optional[str]]:
+  """
+  Validate that the player's queue is not empty.
+  
+  Args:
+    player: The MusicPlayer instance
+    
+  Returns:
+    Tuple of (is_valid, error_message). If valid, error_message is None.
+  """
+  if player.queue.is_empty():
+    return False, "❌ Eilė tuščia!"
+  return True, None
+
+
+def validate_skip_position(
+  position: int,
+  queue_length: int
+) -> tuple[bool, Optional[str]]:
+  """
+  Validate that skip position is within valid range.
+  
+  Args:
+    position: Requested position (1-indexed)
+    queue_length: Current length of queue
+    
+  Returns:
+    Tuple of (is_valid, error_message). If valid, error_message is None.
+  """
+  if position < 1 or position > queue_length:
+    return (
+      False,
+      f"❌ Pozicija turi būti tarp 1 ir {queue_length}!"
+    )
+  return True, None
+
+
+class EmbedBuilder:
+  """
+  Builds consistent Discord embeds for music bot messages.
+  Centralizes embed creation for maintainability and consistent styling.
+  """
+  
+  @staticmethod
+  def now_playing(song: Song) -> discord.Embed:
+    """Create embed for now playing message."""
+    embed = discord.Embed(
+      title="🎵 Dabar groja",
+      description=f"**[{song.title}]({song.url})**",
+      color=discord.Color.green()
+    )
+    embed.add_field(name="Trukmė", value=song.duration_str, inline=True)
+    embed.add_field(name="Užsakė", value=song.requester or "Unknown", inline=True)
+    
+    if song.thumbnail:
+      embed.set_thumbnail(url=song.thumbnail)
+    
+    return embed
+  
+  @staticmethod
+  def queue(player: 'MusicPlayer') -> discord.Embed:
+    """Create embed for queue display."""
+    embed = discord.Embed(
+      title="🎶 Dainų eilė",
+      color=discord.Color.purple()
+    )
+    
+    # Current song
+    if player.queue.current:
+      embed.add_field(
+        name="🎵 Dabar groja",
+        value=f"**[{player.queue.current.title[:50]}]({player.queue.current.url})** [{player.queue.current.duration_str}]",
+        inline=False
+      )
+    else:
+      embed.add_field(
+        name="🎵 Dabar groja",
+        value="Niekas",
+        inline=False
+      )
+    
+    # Queue with download status
+    queue_length = len(player.queue.queue)
+    if queue_length > 0:
+      queue_list = []
+      for i, song in enumerate(list(player.queue.queue)[:10], 1):
+        # Show download status icon
+        if song.is_downloaded:
+          status_icon = "✅"
+        elif player.buffer_manager.is_downloading(song):
+          status_icon = "📥"
+        else:
+          status_icon = "⏳"
+        
+        duration = song.duration_str if song.duration_str else "?"
+        queue_list.append(f"{status_icon} `{i}.` **{song.title[:40]}** [{duration}]")
+      
+      # Determine correct pluralization
+      if queue_length == 1:
+        plural_form = "daina"
+      elif 2 <= queue_length <= 9:
+        plural_form = "dainos"
+      else:
+        plural_form = "dainų"
+      
+      embed.add_field(
+        name=f"📋 Eilėje ({queue_length} {plural_form})",
+        value="\n".join(queue_list),
+        inline=False
+      )
+      
+      if queue_length > 10:
+        embed.add_field(
+          name="➕ Daugiau",
+          value=f"Ir dar {queue_length - 10} dainų...",
+          inline=False
+        )
+    else:
+      embed.add_field(name="📋 Eilėje", value="Tuščia", inline=False)
+    
+    return embed
+  
+  @staticmethod
+  def playlist_added(playlist_entries: List[dict], queue_length: int, requester: str) -> discord.Embed:
+    """Create embed for playlist added message."""
+    embed = discord.Embed(
+      title="📋 Playlist pridėtas į eilę",
+      description=f"Pridėta **{len(playlist_entries)}** dainų",
+      color=discord.Color.green()
+    )
+    embed.add_field(name="Pirmoji daina", value=playlist_entries[0]['title'][:50], inline=False)
+    embed.add_field(name="Eilėje", value=f"{queue_length} dainos", inline=True)
+    embed.add_field(name="Užsakė", value=requester, inline=True)
+    return embed
+  
+  @staticmethod
+  def song_added(song: Song, queue_position: int) -> discord.Embed:
+    """Create embed for song added to queue message."""
+    embed = discord.Embed(
+      title="✅ Pridėta į eilę",
+      description=f"**[{song.title}]({song.url})**",
+      color=discord.Color.blue()
+    )
+    embed.add_field(name="Pozicija eilėje", value=f"#{queue_position}", inline=True)
+    embed.add_field(name="Trukmė", value=song.duration_str, inline=True)
+    embed.add_field(name="Užsakė", value=song.requester, inline=False)
+    
+    if song.thumbnail:
+      embed.set_thumbnail(url=song.thumbnail)
+    
+    return embed
+  
+  @staticmethod
+  def stopped() -> discord.Embed:
+    """Create embed for stopped playback message."""
+    return discord.Embed(
+      title="⏹️ Muzika sustabdyta",
+      description="Eilė išvalyta ir atsijungta nuo voice kanalo.",
+      color=discord.Color.red()
+    )
+  
+  @staticmethod
+  def skipped(current_song: Optional[Song], next_song: Optional[Song]) -> discord.Embed:
+    """Create embed for skipped song message."""
+    embed = discord.Embed(
+      title="⏭️ Praleista",
+      description=f"Praleista: **{current_song.title if current_song else 'Unknown'}**",
+      color=discord.Color.blue()
+    )
+    
+    if next_song:
+      embed.add_field(name="Kita daina", value=next_song.title, inline=False)
+    else:
+      embed.add_field(name="Eilė", value="Tuščia", inline=False)
+    
+    return embed
+  
+  @staticmethod
+  def skipped_to(target_song: Song, position: int) -> discord.Embed:
+    """Create embed for skip to position message."""
+    embed = discord.Embed(
+      title="⏭️ Peršokta",
+      description=f"Peršokta į poziciją #{position}",
+      color=discord.Color.blue()
+    )
+    embed.add_field(
+      name="Kita daina",
+      value=f"**{target_song.title}**",
+      inline=False
+    )
+    return embed
+  
+  @staticmethod
+  def test_mode(song_title: str) -> discord.Embed:
+    """Create embed for test command."""
+    return discord.Embed(
+      title="🧪 Test Mode",
+      description=f"Playing: **{song_title}**",
+      color=discord.Color.orange()
+    )
+
+
+class MusicQueue:
     
     def __init__(self):
         self.queue: deque[Song] = deque()
@@ -289,19 +544,54 @@ class MusicQueue:
         return len(self.queue) == 0 and self.current is None
 
 
-def is_spotify_url(url: str) -> bool:
+class URLValidator:
+  """
+  Validates and categorizes music URLs from various platforms.
+  Provides case-insensitive URL detection for better user experience.
+  """
+  
+  @staticmethod
+  def is_spotify(url: str) -> bool:
     """Check if URL is a Spotify link."""
-    return 'spotify.com' in url or 'open.spotify.com' in url
+    url_lower = url.lower()
+    return 'spotify.com' in url_lower or 'open.spotify.com' in url_lower
+  
+  @staticmethod
+  def is_soundcloud(url: str) -> bool:
+    """Check if URL is a SoundCloud link."""
+    return 'soundcloud.com' in url.lower()
+  
+  @staticmethod
+  def is_youtube(url: str) -> bool:
+    """Check if URL is a YouTube link."""
+    url_lower = url.lower()
+    return any(domain in url_lower for domain in ['youtube.com', 'youtu.be', 'youtube.be'])
+  
+  @staticmethod
+  def is_playlist(url: str) -> bool:
+    """Check if URL contains a playlist."""
+    return 'list=' in url or '/playlist?' in url
+
+
+# Backward compatibility - keep old function names
+def is_spotify_url(url: str) -> bool:
+  """Check if URL is a Spotify link. (deprecated: use URLValidator.is_spotify)"""
+  return URLValidator.is_spotify(url)
 
 
 def is_soundcloud_url(url: str) -> bool:
-    """Check if URL is a SoundCloud link."""
-    return 'soundcloud.com' in url
+  """Check if URL is a SoundCloud link. (deprecated: use URLValidator.is_soundcloud)"""
+  return URLValidator.is_soundcloud(url)
 
 
 def is_youtube_url(url: str) -> bool:
-    """Check if URL is a YouTube link."""
-    return any(domain in url for domain in ['youtube.com', 'youtu.be', 'youtube.be'])
+  """Check if URL is a YouTube link. (deprecated: use URLValidator.is_youtube)"""
+  return URLValidator.is_youtube(url)
+
+
+def is_playlist_url(url: str) -> bool:
+  """Check if URL contains a playlist. (deprecated: use URLValidator.is_playlist)"""
+  return URLValidator.is_playlist(url)
 
 
 async def extract_spotify_query(url: str) -> Optional[str]:
@@ -334,75 +624,88 @@ async def extract_spotify_query(url: str) -> Optional[str]:
     return None
 
 
-def is_playlist_url(url: str) -> bool:
-    """Check if URL contains a playlist."""
-    return 'list=' in url or '/playlist?' in url
+def _convert_to_playlist_url(query: str) -> str:
+  """
+  Convert watch URL with playlist param to proper playlist URL.
+  
+  Args:
+    query: Original URL that may contain list= parameter
+    
+  Returns:
+    Converted playlist URL if applicable, otherwise original query
+  """
+  if 'list=' in query and 'watch?' in query:
+    import re
+    list_match = re.search(r'list=([a-zA-Z0-9_-]+)', query)
+    if list_match:
+      playlist_id = list_match.group(1)
+      converted = f"https://www.youtube.com/playlist?list={playlist_id}"
+      print(f"📋 Converted to playlist URL: {converted}", flush=True)
+      return converted
+  return query
 
 
 async def get_playlist_entries(query: str) -> List[dict]:
-    """
-    Extract playlist entries without downloading.
-    Returns list of video info dicts with 'url' and 'title'.
-    """
-    # Only process if it looks like a playlist URL
-    if not is_playlist_url(query):
-        return []
+  """
+  Extract playlist entries without downloading.
+  Returns list of video info dicts with 'url' and 'title'.
+  """
+  # Early return: Only process playlist URLs
+  if not is_playlist_url(query):
+    return []
+  
+  try:
+    loop = asyncio.get_event_loop()
     
-    try:
-        loop = asyncio.get_event_loop()
-        
-        # Convert watch?v=X&list=Y to playlist URL for proper extraction
-        if 'list=' in query and 'watch?' in query:
-            import re
-            list_match = re.search(r'list=([a-zA-Z0-9_-]+)', query)
-            if list_match:
-                playlist_id = list_match.group(1)
-                query = f"https://www.youtube.com/playlist?list={playlist_id}"
-                print(f"📋 Converted to playlist URL: {query}", flush=True)
-        
-        # Use extract_flat to get playlist info quickly
-        extract_opts = YTDL_OPTIONS.copy()
-        extract_opts['extract_flat'] = True
-        extract_opts['quiet'] = True
-        extract_opts['noplaylist'] = False  # Force playlist mode
-        
-        def do_extract():
-            with yt_dlp.YoutubeDL(extract_opts) as ydl:
-                return ydl.extract_info(query, download=False)
-        
-        print(f"📋 Extracting playlist info...", flush=True)
-        data = await asyncio.wait_for(
-            loop.run_in_executor(None, do_extract),
-            timeout=60
-        )
-        
-        if not data:
-            print(f"❌ No data returned from playlist extraction", flush=True)
-            return []
-        
-        # Check if it's a playlist
-        if 'entries' in data:
-            entries = []
-            playlist_title = data.get('title', 'Unknown Playlist')
-            print(f"📋 Found playlist: {playlist_title} ({len(data['entries'])} videos)", flush=True)
-            
-            for entry in data['entries'][:MAX_PLAYLIST_SONGS]:
-                if entry:
-                    entries.append({
-                        'url': entry.get('url') or entry.get('webpage_url') or f"https://youtube.com/watch?v={entry.get('id')}",
-                        'title': entry.get('title', 'Unknown'),
-                        'id': entry.get('id')
-                    })
-            return entries
-        else:
-            print(f"❌ No 'entries' in data - not a playlist", flush=True)
-            return []
+    # Convert watch?v=X&list=Y to proper playlist URL
+    query = _convert_to_playlist_url(query)
     
-    except Exception as e:
-        print(f"❌ Error extracting playlist: {e}", flush=True)
-        import traceback
-        traceback.print_exc()
-        return []
+    # Configure extraction options
+    extract_opts = YTDL_OPTIONS.copy()
+    extract_opts['extract_flat'] = True
+    extract_opts['quiet'] = True
+    extract_opts['noplaylist'] = False  # Force playlist mode
+    
+    def do_extract():
+      with yt_dlp.YoutubeDL(extract_opts) as ydl:
+        return ydl.extract_info(query, download=False)
+    
+    print(f"📋 Extracting playlist info...", flush=True)
+    data = await asyncio.wait_for(
+      loop.run_in_executor(None, do_extract),
+      timeout=60
+    )
+    
+    # Early return: No data from extraction
+    if not data:
+      print(f"❌ No data returned from playlist extraction", flush=True)
+      return []
+    
+    # Early return: Not a playlist (no 'entries' field)
+    if 'entries' not in data:
+      print(f"❌ No 'entries' in data - not a playlist", flush=True)
+      return []
+    
+    # Process playlist entries
+    playlist_title = data.get('title', 'Unknown Playlist')
+    print(f"📋 Found playlist: {playlist_title} ({len(data['entries'])} videos)", flush=True)
+    
+    entries = []
+    for entry in data['entries'][:MAX_PLAYLIST_SONGS]:
+      if entry:
+        entries.append({
+          'url': entry.get('url') or entry.get('webpage_url') or f"https://youtube.com/watch?v={entry.get('id')}",
+          'title': entry.get('title', 'Unknown'),
+          'id': entry.get('id')
+        })
+    
+    return entries
+  
+  except Exception as e:
+    print(f"❌ Error extracting playlist: {e}", flush=True)
+    import traceback
+    traceback.print_exc()
+    return []
 
 
 async def download_song(url: str, requester: str, timeout_seconds: int = 120) -> Optional[Song]:
@@ -734,14 +1037,12 @@ class MusicPlayer:
             if self.now_playing_message:
                 try:
                     print(f"📝 Updating now playing message for: {song.title}", flush=True)
-                    embed = discord.Embed(
-                        title="🎵 Dabar groja",
-                        description=f"**[{song.title}]({song.url})**",
-                        color=discord.Color.green()
-                    )
-                    embed.add_field(name="Trukmė", value=song.duration_str, inline=True)
-                    embed.add_field(name="Eilėje", value=str(len(self.queue)), inline=True)
-                    embed.add_field(name="Užsakė", value=song.requester, inline=True)
+                    
+                    # Use EmbedBuilder for consistent formatting
+                    embed = EmbedBuilder.now_playing(song)
+                    
+                    # Override some fields for in-progress display
+                    embed.set_field_at(1, name="Eilėje", value=str(len(self.queue)), inline=True)
                     
                     # Show downloading status
                     if self.buffer_manager.get_downloading_count() > 0:
@@ -751,9 +1052,6 @@ class MusicPlayer:
                             value=f"{downloading_count} daina{'s' if downloading_count > 1 else ''}", 
                             inline=True
                         )
-                    
-                    if song.thumbnail:
-                        embed.set_thumbnail(url=song.thumbnail)
                     
                     # Keep the same view
                     view = MusicControlView(self.bot, self.guild.id)
@@ -905,55 +1203,13 @@ class MusicControlView(discord.ui.View):
         
         player = self.get_player()
         
-        embed = discord.Embed(title="📋 Muzikos eilė", color=discord.Color.blue())
-        
         if not player:
             print("⚠️ No player found", flush=True)
             await interaction.followup.send("📭 Nėra aktyvaus grotuvo", ephemeral=True)
             return
         
-        # Current song
-        if player.queue.current:
-            print(f"▶️ Current song: {player.queue.current.title}", flush=True)
-            embed.add_field(
-                name="▶️ Dabar groja",
-                value=f"**[{player.queue.current.title[:50]}]({player.queue.current.url})** ({player.queue.current.duration_str})",
-                inline=False
-            )
-        else:
-            print("⚠️ No current song", flush=True)
-            embed.add_field(
-                name="▶️ Dabar groja",
-                value="Niekas",
-                inline=False
-            )
-        
-        # Queue - show up to 20 songs with download status
-        queue_length = len(player.queue.queue)
-        print(f"📋 Queue length: {queue_length}", flush=True)
-        
-        if queue_length > 0:
-            print(f"📋 Building queue list with {queue_length} songs", flush=True)
-            queue_text = ""
-            for i, song in enumerate(list(player.queue.queue)[:20], 1):
-                # Show download status icon
-                if song.is_downloaded:
-                    status_icon = "✅"
-                elif player.buffer_manager.is_downloading(song):
-                    status_icon = "📥"
-                else:
-                    status_icon = "⏳"
-                
-                duration = song.duration_str if song.duration_str else "?"
-                queue_text += f"{status_icon} {i}. {song.title[:45]} ({duration})\n"
-            
-            if queue_length > 20:
-                queue_text += f"\n... ir dar {queue_length - 20} dainų"
-            
-            embed.add_field(name=f"📋 Eilėje ({queue_length} {'daina' if queue_length == 1 else 'dainos'})", value=queue_text, inline=False)
-        else:
-            print("📭 Queue is empty", flush=True)
-            embed.add_field(name="📋 Eilėje", value="Tuščia", inline=False)
+        # Use EmbedBuilder for consistent formatting
+        embed = EmbedBuilder.queue(player)
         
         # Show playlist download progress if active
         if player.playlist_info['total'] > 0:
@@ -965,7 +1221,7 @@ class MusicControlView(discord.ui.View):
                     inline=False
                 )
         
-        print(f"📤 Sending queue embed (current: {player.queue.current is not None}, queue: {queue_length})", flush=True)
+        print(f"📤 Sending queue embed (current: {player.queue.current is not None}, queue: {len(player.queue)})", flush=True)
         await interaction.followup.send(embed=embed, ephemeral=True)
 
 
@@ -1018,13 +1274,11 @@ class Music(commands.Cog):
         """Play a song or playlist from YouTube, SoundCloud, or Spotify."""
         print(f"▶️ /play command received from {interaction.user.display_name}: {query}")
         
-        # Check if user is in a voice channel
-        if not interaction.user.voice or not interaction.user.voice.channel:
+        # Validate user is in voice channel
+        is_valid, error_msg = validate_user_in_voice(interaction)
+        if not is_valid:
             print("❌ User not in voice channel")
-            await interaction.response.send_message(
-                "❌ Tu turi būti voice kanale, kad galėtum groti muziką!",
-                ephemeral=True
-            )
+            await interaction.response.send_message(error_msg, ephemeral=True)
             return
         
         print(f"📍 User is in voice channel: {interaction.user.voice.channel.name}")
@@ -1063,14 +1317,11 @@ class Music(commands.Cog):
                 print(f"📋 Added to queue [{i+1}/{len(playlist_entries)}]: {song.title}", flush=True)
             
             # Show playlist added message
-            embed = discord.Embed(
-                title="📋 Playlist pridėtas į eilę",
-                description=f"Pridėta **{len(playlist_entries)}** dainų",
-                color=discord.Color.green()
+            embed = EmbedBuilder.playlist_added(
+              playlist_entries,
+              len(player.queue),
+              interaction.user.display_name
             )
-            embed.add_field(name="Pirmoji daina", value=playlist_entries[0]['title'][:50], inline=False)
-            embed.add_field(name="Eilėje", value=f"{len(player.queue)} dainos", inline=True)
-            embed.add_field(name="Užsakė", value=interaction.user.display_name, inline=True)
             
             view = MusicControlView(self.bot, interaction.guild.id)
             player.now_playing_message = await interaction.followup.send(embed=embed, view=view)
@@ -1097,18 +1348,8 @@ class Music(commands.Cog):
             player.queue.add(song)
             print(f"📋 Added to queue. Queue length: {len(player.queue)}")
             
-            # Create embed with control buttons
-            embed = discord.Embed(
-                title="🎵 Pridėta į eilę",
-                description=f"**[{song.title}]({song.url})**",
-                color=discord.Color.green()
-            )
-            embed.add_field(name="Trukmė", value=song.duration_str, inline=True)
-            embed.add_field(name="Eilėje", value=str(len(player.queue)), inline=True)
-            embed.add_field(name="Užsakė", value=song.requester, inline=True)
-            
-            if song.thumbnail:
-                embed.set_thumbnail(url=song.thumbnail)
+            # Create embed with control buttons using EmbedBuilder
+            embed = EmbedBuilder.song_added(song, len(player.queue))
             
             view = MusicControlView(self.bot, interaction.guild.id)
             player.now_playing_message = await interaction.followup.send(embed=embed, view=view)
@@ -1129,12 +1370,10 @@ class Music(commands.Cog):
         TEST_URL = "https://www.youtube.com/watch?v=4kHl4FoK1Ys"
         print(f"🧪 /testplay command received from {interaction.user.display_name}", flush=True)
         
-        # Check if user is in a voice channel
-        if not interaction.user.voice or not interaction.user.voice.channel:
-            await interaction.response.send_message(
-                "❌ Tu turi būti voice kanale!",
-                ephemeral=True
-            )
+        # Validate user is in voice channel
+        is_valid, error_msg = validate_user_in_voice(interaction)
+        if not is_valid:
+            await interaction.response.send_message(error_msg, ephemeral=True)
             return
         
         await interaction.response.defer()
@@ -1160,12 +1399,7 @@ class Music(commands.Cog):
         # Add to queue
         player.queue.add(song)
         
-        embed = discord.Embed(
-            title="🧪 Test Mode",
-            description=f"Playing: **{song.title}**",
-            color=discord.Color.orange()
-        )
-        await interaction.followup.send(embed=embed)
+        await interaction.followup.send(embed=EmbedBuilder.test_mode(song.title))
         
         # Start playing
         if not player.voice_client.is_playing() and (player._player_task is None or player._player_task.done()):
@@ -1176,21 +1410,14 @@ class Music(commands.Cog):
         """Stop playback and clear the queue."""
         player = player_manager.get(interaction.guild.id)
         
-        if not player or not player.voice_client:
-            await interaction.response.send_message(
-                "❌ Botas nėra prijungtas prie voice kanalo!",
-                ephemeral=True
-            )
+        is_valid, error_msg = validate_player_exists(player, interaction.guild.id)
+        if not is_valid:
+            await interaction.response.send_message(error_msg, ephemeral=True)
             return
         
         await player.disconnect()
         
-        embed = discord.Embed(
-            title="⏹️ Muzika sustabdyta",
-            description="Eilė išvalyta ir atsijungta nuo voice kanalo.",
-            color=discord.Color.red()
-        )
-        await interaction.response.send_message(embed=embed)
+        await interaction.response.send_message(embed=EmbedBuilder.stopped())
         
         # Clean up player
         player_manager.remove(interaction.guild.id)
@@ -1200,11 +1427,9 @@ class Music(commands.Cog):
         """Skip the current song."""
         player = player_manager.get(interaction.guild.id)
         
-        if not player or not player.voice_client:
-            await interaction.response.send_message(
-                "❌ Botas nėra prijungtas prie voice kanalo!",
-                ephemeral=True
-            )
+        is_valid, error_msg = validate_player_exists(player, interaction.guild.id)
+        if not is_valid:
+            await interaction.response.send_message(error_msg, ephemeral=True)
             return
         
         if not player.voice_client.is_playing():
@@ -1217,20 +1442,9 @@ class Music(commands.Cog):
         current_song = player.queue.current
         player.skip()
         
-        embed = discord.Embed(
-            title="⏭️ Praleista",
-            description=f"Praleista: **{current_song.title if current_song else 'Unknown'}**",
-            color=discord.Color.blue()
-        )
-        
-        # Show what's next
-        if player.queue.queue:
-            next_song = player.queue.queue[0]
-            embed.add_field(name="Kita daina", value=next_song.title, inline=False)
-        else:
-            embed.add_field(name="Eilė", value="Tuščia", inline=False)
-        
-        await interaction.response.send_message(embed=embed)
+        # Determine next song for embed
+        next_song = player.queue.queue[0] if player.queue.queue else None
+        await interaction.response.send_message(embed=EmbedBuilder.skipped(current_song, next_song))
     
     @app_commands.command(name="skipto", description="Peršokti į konkrečią dainą eilėje")
     @app_commands.describe(position="Dainos numeris eilėje (1, 2, 3...)")
@@ -1238,25 +1452,14 @@ class Music(commands.Cog):
         """Skip to a specific position in the queue."""
         player = player_manager.get(interaction.guild.id)
         
-        if not player or not player.voice_client:
-            await interaction.response.send_message(
-                "❌ Botas nėra prijungtas prie voice kanalo!",
-                ephemeral=True
-            )
+        is_valid, error_msg = validate_player_exists(player, interaction.guild.id)
+        if not is_valid:
+            await interaction.response.send_message(error_msg, ephemeral=True)
             return
         
-        if position < 1:
-            await interaction.response.send_message(
-                "❌ Pozicija turi būti 1 arba daugiau!",
-                ephemeral=True
-            )
-            return
-        
-        if position > len(player.queue):
-            await interaction.response.send_message(
-                f"❌ Eilėje yra tik {len(player.queue)} dainų!",
-                ephemeral=True
-            )
+        is_valid, error_msg = validate_skip_position(position, len(player.queue))
+        if not is_valid:
+            await interaction.response.send_message(error_msg, ephemeral=True)
             return
         
         # Defer the response to avoid timeout
@@ -1270,16 +1473,10 @@ class Music(commands.Cog):
             
             target_song = player.queue.queue[0] if player.queue.queue else None
             
-            embed = discord.Embed(
-                title="⏩ Peršokta",
-                description=f"Peršokta į poziciją **#{position}**",
-                color=discord.Color.blue()
-            )
-            
             if target_song:
-                embed.add_field(name="Kita daina", value=target_song.title, inline=False)
-            
-            await interaction.followup.send(embed=embed)
+                await interaction.followup.send(embed=EmbedBuilder.skipped_to(target_song, position))
+            else:
+                await interaction.followup.send("⚠️ Peršokta, bet eilė tuščia", ephemeral=True)
         else:
             await interaction.followup.send(
                 "❌ Nepavyko peršokti į šią poziciją!",
@@ -1291,58 +1488,17 @@ class Music(commands.Cog):
         """Show the current queue."""
         player = player_manager.get(interaction.guild.id)
         
-        embed = discord.Embed(
-            title="🎶 Dainų eilė",
-            color=discord.Color.purple()
-        )
-        
         if not player:
-            embed.description = "📭 Nėra aktyvaus grotuvo!"
+            embed = discord.Embed(
+                title="🎶 Dainų eilė",
+                description="📭 Nėra aktyvaus grotuvo!",
+                color=discord.Color.purple()
+            )
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         
-        # Current song
-        if player.queue.current:
-            embed.add_field(
-                name="🎵 Dabar groja",
-                value=f"**[{player.queue.current.title[:50]}]({player.queue.current.url})** [{player.queue.current.duration_str}]",
-                inline=False
-            )
-        else:
-            embed.add_field(
-                name="🎵 Dabar groja",
-                value="Niekas",
-                inline=False
-            )
-        
-        # Queue with download status
-        queue_length = len(player.queue.queue)
-        if queue_length > 0:
-            queue_list = []
-            for i, song in enumerate(list(player.queue.queue)[:10], 1):
-                # Show download status icon
-                if song.is_downloaded:
-                    status_icon = "✅"
-                elif player.buffer_manager.is_downloading(song):
-                    status_icon = "📥"
-                else:
-                    status_icon = "⏳"
-                
-                duration = song.duration_str if song.duration_str else "?"
-                queue_list.append(f"{status_icon} `{i}.` **{song.title[:40]}** [{duration}]")
-            
-            embed.add_field(
-                name=f"📋 Eilėje ({queue_length} {'daina' if queue_length == 1 else 'dainų'})",
-                value="\n".join(queue_list),
-                inline=False
-            )
-            
-            if queue_length > 10:
-                embed.set_footer(text=f"...ir dar {queue_length - 10} dainų")
-        else:
-            embed.add_field(name="📋 Eilėje", value="Tuščia", inline=False)
-        
-        await interaction.response.send_message(embed=embed)
+        # Use EmbedBuilder for consistent queue display
+        await interaction.response.send_message(embed=EmbedBuilder.queue(player))
     
     @app_commands.command(name="nowplaying", description="Rodyti dabartinę dainą")
     async def nowplaying(self, interaction: discord.Interaction):
@@ -1356,19 +1512,7 @@ class Music(commands.Cog):
             )
             return
         
-        song = player.queue.current
-        embed = discord.Embed(
-            title="🎵 Dabar groja",
-            description=f"**[{song.title}]({song.url})**",
-            color=discord.Color.green()
-        )
-        embed.add_field(name="Trukmė", value=song.duration_str, inline=True)
-        embed.add_field(name="Užsakė", value=song.requester or "Unknown", inline=True)
-        
-        if song.thumbnail:
-            embed.set_thumbnail(url=song.thumbnail)
-        
-        await interaction.response.send_message(embed=embed)
+        await interaction.response.send_message(embed=EmbedBuilder.now_playing(player.queue.current))
 
 
 async def setup(bot: commands.Bot):
