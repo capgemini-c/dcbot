@@ -4,7 +4,6 @@ Music module for Discord bot - supports YouTube, SoundCloud, and Spotify links.
 
 import asyncio
 import os
-import random
 import re
 from collections import deque
 from dataclasses import dataclass
@@ -65,8 +64,6 @@ print("=" * 50, flush=True)
 try:
     import nacl
     print(f"✅ PyNaCl version: {nacl.__version__}", flush=True)
-    from nacl import secret
-    print("✅ nacl.secret imported", flush=True)
     # Test if encryption actually works
     from nacl.secret import SecretBox
     key = b'0' * 32
@@ -158,7 +155,7 @@ test_url_direct("https://www.youtube.com", "YouTube")
 test_url_direct("https://soundcloud.com", "SoundCloud")
 
 print("\nProxy connection:", flush=True)
-PROXY_WORKS = test_proxy_connection()
+test_proxy_connection()
 
 print("=" * 50, flush=True)
 

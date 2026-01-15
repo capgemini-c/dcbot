@@ -1,0 +1,211 @@
+# Discord Music Bot - Cursor Rules
+
+## Project Overview
+This is a Lithuanian Discord bot with music playback capabilities and custom commands.
+- Language: Python 3.12+
+- Framework: discord.py 2.6+
+- Main features: Music streaming (YouTube/SoundCloud/Spotify), scheduled messages, basketball chants
+
+## Code Style & Standards
+
+### Python Conventions
+- Use type hints for all function parameters and return values
+- Prefer async/await over callbacks
+- Use f-strings for string formatting
+- Keep functions under 50 lines when possible
+- Use descriptive variable names (avoid single letters except in loops)
+
+### Discord.py Specific
+- Always use slash commands (`@app_commands.command`) for new user-facing features
+- Defer interactions that take >3 seconds: `await interaction.response.defer()`
+- Use ephemeral messages for errors: `ephemeral=True`
+- Check voice channel connection before music operations
+- Always handle `discord.errors.NotFound` for message edits
+
+### Music Bot Specific
+- Songs should be downloaded to `/tmp/dcbot_audio` cache
+- Clean up audio files after playback using `song.cleanup()`
+- Maintain download buffer (current + next 2 songs)
+- Use `print(..., flush=True)` for real-time logging
+- Always check if voice_client exists and is connected before operations
+
+## Language & Localization
+
+### Lithuanian Text
+- All user-facing messages should be in Lithuanian
+- Use proper Lithuanian pluralization:
+  - 1 daina (song)
+  - 2-9 dainos
+  - 10+ dainų
+- Command names can be in Lithuanian or English
+- Embed titles should use emojis + Lithuanian text
+
+### Message Style
+- Keep messages casual and friendly
+- Use emojis to enhance readability
+- Error messages should be constructive, not just "failed"
+
+## Architecture Patterns
+
+### Music System
+- `MusicPlayer` manages playback per guild
+- `MusicQueue` handles song queue (uses deque)
+- `Song` dataclass stores metadata and file path
+- `MusicControlView` provides persistent button controls
+- Global `players` dict maps guild_id -> MusicPlayer
+
+### Event Handling
+- `on_voice_state_update`: Monitor for auto-disconnect (30s grace period)
+- `on_message`: Handle text-based triggers (jasna, zalgiris)
+- `on_ready`: Load cogs and sync commands
+
+### File Management
+- Download files with UUID prefix to avoid conflicts
+- Check file existence before playing: `os.path.exists(local_file)`
+- Implement cleanup on error, skip, and normal completion
+
+## Security & Best Practices
+
+### Input Validation
+- Validate URLs before passing to yt-dlp
+- Check position bounds for /skipto command
+- Verify user is in voice channel before music commands
+
+### Resource Management
+- Implement download timeouts (default 120s)
+- Clean up player on disconnect
+- Remove old files from cache periodically
+- Cancel async tasks on cleanup
+
+### Error Handling
+- Catch specific exceptions, not bare `except:`
+- Log errors with context: `print(f"❌ Error in X: {type(e).__name__}: {e}")`
+- Use try/except for network operations
+- Always cleanup resources in finally blocks or on error
+
+## Testing & Debugging
+
+### Logging Strategy
+- Use emoji prefixes for log types:
+  - ✅ Success
+  - ❌ Error
+  - ⚠️ Warning
+  - 🔄 Processing
+  - 📋 Queue operation
+  - 🎵 Music operation
+  - 🔌 Connection
+- Include flush=True for Docker compatibility
+- Log function entry for complex operations
+
+### Test Commands
+- Keep `/testplay` for debugging
+- Use known YouTube URLs for testing
+- Test with both single songs and playlists
+
+## Dependencies & Environment
+
+### Required System Dependencies
+- FFmpeg (audio processing)
+- libopus (Discord voice)
+- libsodium (encryption)
+- Deno (YouTube extraction)
+
+### Environment Variables
+- `DISCORD_TOKEN`: Bot authentication
+- `CHANNEL_ID`: Default channel for scheduled messages
+- `TIMEZONE`: For scheduling (Europe/Vilnius)
+- `GAME_USER_IDS`: Comma-separated user IDs for mentions
+- `NORDVPN_USER`, `NORDVPN_PASS`: Optional proxy credentials
+
+### Python Packages
+- discord.py >= 2.6.0 (main framework)
+- yt-dlp (YouTube/audio extraction)
+- PyNaCl (voice encryption)
+- APScheduler (scheduled tasks)
+- aiohttp (async HTTP)
+- beautifulsoup4 (news scraping)
+
+## Common Patterns
+
+### Adding a New Music Command
+```python
+@app_commands.command(name="command_name", description="Lithuanian description")
+async def command_name(self, interaction: discord.Interaction):
+    player = players.get(interaction.guild.id)
+    
+    if not player or not player.voice_client:
+        await interaction.response.send_message(
+            "❌ Botas nėra prijungtas prie voice kanalo!",
+            ephemeral=True
+        )
+        return
+    
+    # Command logic here
+    
+    embed = discord.Embed(title="...", color=discord.Color.blue())
+    await interaction.response.send_message(embed=embed)
+```
+
+### Creating Embeds
+```python
+embed = discord.Embed(
+    title="🎵 Title with emoji",
+    description=f"**[{song.title}]({song.url})**",  # Clickable links
+    color=discord.Color.green()
+)
+embed.add_field(name="Field Name", value="Field Value", inline=True)
+if song.thumbnail:
+    embed.set_thumbnail(url=song.thumbnail)
+```
+
+### Queue Operations
+```python
+# Add song
+player.queue.add(song)
+
+# Get next (handles loop mode)
+next_song = player.queue.next()
+
+# Check if empty
+if player.queue.is_empty():
+    # Handle empty queue
+```
+
+## Specific Gotchas
+
+### Voice Channel Issues
+- Always check `interaction.user.voice` exists before connecting
+- Voice client can disconnect unexpectedly - always verify connection
+- Moving between channels requires `await voice_client.move_to(channel)`
+
+### Download Management
+- yt-dlp can hang - always use asyncio timeout
+- Some videos are geo-restricted - proxy helps (NordVPN SOCKS5)
+- Extract playlist info with `extract_flat=True` for speed
+- Limit playlists to 50 songs to prevent abuse
+
+### Button Interactions
+- Buttons have 3-second response limit - defer if needed
+- Buttons persist across restarts if using custom_id
+- Update button states by editing message: `await interaction.response.edit_message(view=self)`
+
+### Async Task Management
+- Store player_task reference to check if running
+- Cancel tasks on disconnect: `task.cancel()`
+- Use `asyncio.create_task()` for background operations
+- Don't await background tasks that should run concurrently
+
+## Git Workflow
+- Commit messages should be descriptive
+- Use conventional commits format when possible
+- Test changes before pushing
+- Keep commits focused on single features/fixes
+
+## When Making Changes
+1. Read existing code patterns before implementing
+2. Match the existing code style
+3. Add logging for new operations
+4. Handle errors gracefully
+5. Update documentation if needed
+6. Test with both single songs and playlists
+7. Consider edge cases (empty queue, disconnected bot, etc.)
