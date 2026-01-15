@@ -905,6 +905,7 @@ class MusicPlayer:
         self._play_next_event = asyncio.Event()
         self._player_task: Optional[asyncio.Task] = None
         self.now_playing_message: Optional[discord.Message] = None  # Store message to update
+        self.text_channel: Optional[discord.TextChannel] = None  # Store channel for sending messages
         self.playlist_info: dict = {'total': 0, 'downloaded': 0}  # Track playlist progress
         self.buffer_manager = DownloadBufferManager(buffer_size=3)  # Delegate to buffer manager
     
@@ -1033,10 +1034,23 @@ class MusicPlayer:
                 print("❌ play() returned False, skipping to next")
                 continue
             
-            # Update now playing message AFTER song is downloaded and playing
+            # Delete old message and create new one at bottom of chat
             if self.now_playing_message:
                 try:
-                    print(f"📝 Updating now playing message for: {song.title}", flush=True)
+                    print(f"🗑️ Deleting old now playing message", flush=True)
+                    await self.now_playing_message.delete()
+                    print(f"✅ Old message deleted", flush=True)
+                except discord.errors.NotFound:
+                    print(f"⚠️ Old message already deleted", flush=True)
+                except Exception as e:
+                    print(f"⚠️ Failed to delete old message: {type(e).__name__}: {e}", flush=True)
+                finally:
+                    self.now_playing_message = None
+            
+            # Create new now playing message at bottom of chat
+            if self.text_channel:
+                try:
+                    print(f"📝 Creating new now playing message for: {song.title}", flush=True)
                     
                     # Use EmbedBuilder for consistent formatting
                     embed = EmbedBuilder.now_playing(song)
@@ -1053,21 +1067,16 @@ class MusicPlayer:
                             inline=True
                         )
                     
-                    # Keep the same view
+                    # Send new message with controls
                     view = MusicControlView(self.bot, self.guild.id)
-                    await self.now_playing_message.edit(embed=embed, view=view)
-                    print(f"✅ Successfully updated now playing message", flush=True)
-                except discord.errors.NotFound:
-                    print(f"⚠️ Now playing message was deleted, cannot update", flush=True)
-                    self.now_playing_message = None
-                except discord.errors.Forbidden:
-                    print(f"⚠️ No permission to edit now playing message", flush=True)
+                    self.now_playing_message = await self.text_channel.send(embed=embed, view=view)
+                    print(f"✅ Created new now playing message in #{self.text_channel.name}", flush=True)
                 except Exception as e:
-                    print(f"⚠️ Failed to update now playing message: {type(e).__name__}: {e}", flush=True)
+                    print(f"⚠️ Failed to create new now playing message: {type(e).__name__}: {e}", flush=True)
                     import traceback
                     traceback.print_exc()
             else:
-                print(f"⚠️ No now_playing_message reference exists, cannot update", flush=True)
+                print(f"⚠️ No text channel stored, cannot send now playing message", flush=True)
             
             # Wait for song to finish
             print("⏳ Waiting for song to finish...")
@@ -1289,6 +1298,10 @@ class Music(commands.Cog):
         player = get_player(self.bot, interaction.guild)
         print(f"🎮 Got player for guild: {interaction.guild.name}")
         
+        # Store text channel for sending messages
+        player.text_channel = interaction.channel
+        print(f"💬 Stored text channel: #{interaction.channel.name}", flush=True)
+        
         # Connect to voice channel
         print(f"🔌 Attempting to connect to: {voice_channel.name}")
         if not await player.connect(voice_channel):
@@ -1380,6 +1393,9 @@ class Music(commands.Cog):
         
         voice_channel = interaction.user.voice.channel
         player = get_player(self.bot, interaction.guild)
+        
+        # Store text channel for sending messages
+        player.text_channel = interaction.channel
         
         # Connect to voice channel
         if not await player.connect(voice_channel):
@@ -1474,7 +1490,20 @@ class Music(commands.Cog):
             target_song = player.queue.queue[0] if player.queue.queue else None
             
             if target_song:
-                await interaction.followup.send(embed=EmbedBuilder.skipped_to(target_song, position))
+                # Send temporary message that deletes after 10 seconds
+                message = await interaction.followup.send(
+                  embed=EmbedBuilder.skipped_to(target_song, position)
+                )
+                
+                # Delete message after 10 seconds
+                await asyncio.sleep(10)
+                try:
+                    await message.delete()
+                    print(f"🗑️ Deleted skipto message after 10s", flush=True)
+                except discord.errors.NotFound:
+                    print(f"⚠️ Skipto message already deleted", flush=True)
+                except Exception as e:
+                    print(f"⚠️ Failed to delete skipto message: {e}", flush=True)
             else:
                 await interaction.followup.send("⚠️ Peršokta, bet eilė tuščia", ephemeral=True)
         else:
