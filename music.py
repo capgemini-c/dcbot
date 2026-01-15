@@ -333,21 +333,6 @@ def validate_skip_position(
   return True, None
 
 
-def require_player(func):
-  """
-  Decorator to validate that a music player exists before command execution.
-  Automatically validates and passes the player to the decorated function.
-  """
-  async def wrapper(self, interaction: discord.Interaction, *args, **kwargs):
-    player = player_manager.get(interaction.guild.id)
-    is_valid, error_msg = validate_player_exists(player, interaction.guild.id)
-    if not is_valid:
-      await interaction.response.send_message(error_msg, ephemeral=True)
-      return
-    return await func(self, interaction, *args, player=player, **kwargs)
-  return wrapper
-
-
 class EmbedBuilder:
   """
   Builds consistent Discord embeds for music bot messages.
@@ -1379,9 +1364,14 @@ class Music(commands.Cog):
             player._player_task = asyncio.create_task(player.start_player_loop())
     
     @app_commands.command(name="stop", description="Sustabdyti muziką ir išvalyti eilę")
-    @require_player
-    async def stop(self, interaction: discord.Interaction, player: 'MusicPlayer'):
+    async def stop(self, interaction: discord.Interaction):
         """Stop playback and clear the queue."""
+        player = player_manager.get(interaction.guild.id)
+        is_valid, error_msg = validate_player_exists(player, interaction.guild.id)
+        if not is_valid:
+            await interaction.response.send_message(error_msg, ephemeral=True)
+            return
+        
         await player.disconnect()
         
         await interaction.response.send_message(embed=EmbedBuilder.stopped())
@@ -1390,9 +1380,14 @@ class Music(commands.Cog):
         player_manager.remove(interaction.guild.id)
     
     @app_commands.command(name="skip", description="Praleisti dabartinę dainą")
-    @require_player
-    async def skip(self, interaction: discord.Interaction, player: 'MusicPlayer'):
+    async def skip(self, interaction: discord.Interaction):
         """Skip the current song."""
+        player = player_manager.get(interaction.guild.id)
+        is_valid, error_msg = validate_player_exists(player, interaction.guild.id)
+        if not is_valid:
+            await interaction.response.send_message(error_msg, ephemeral=True)
+            return
+        
         if not player.voice_client.is_playing():
             await interaction.response.send_message(
                 "❌ Šiuo metu niekas negroja!",
@@ -1409,9 +1404,14 @@ class Music(commands.Cog):
     
     @app_commands.command(name="skipto", description="Peršokti į konkrečią dainą eilėje")
     @app_commands.describe(position="Dainos numeris eilėje (1, 2, 3...)")
-    @require_player
-    async def skipto(self, interaction: discord.Interaction, position: int, player: 'MusicPlayer'):
+    async def skipto(self, interaction: discord.Interaction, position: int):
         """Skip to a specific position in the queue."""
+        player = player_manager.get(interaction.guild.id)
+        is_valid, error_msg = validate_player_exists(player, interaction.guild.id)
+        if not is_valid:
+            await interaction.response.send_message(error_msg, ephemeral=True)
+            return
+        
         is_valid, error_msg = validate_skip_position(position, len(player.queue))
         if not is_valid:
             await interaction.response.send_message(error_msg, ephemeral=True)
@@ -1468,9 +1468,14 @@ class Music(commands.Cog):
         await interaction.response.send_message(embed=EmbedBuilder.queue(player))
     
     @app_commands.command(name="nowplaying", description="Rodyti dabartinę dainą")
-    @require_player
-    async def nowplaying(self, interaction: discord.Interaction, player: 'MusicPlayer'):
+    async def nowplaying(self, interaction: discord.Interaction):
         """Show the currently playing song."""
+        player = player_manager.get(interaction.guild.id)
+        is_valid, error_msg = validate_player_exists(player, interaction.guild.id)
+        if not is_valid:
+            await interaction.response.send_message(error_msg, ephemeral=True)
+            return
+        
         if not player.queue.current:
             await interaction.response.send_message(
                 "❌ Šiuo metu niekas negroja!",
