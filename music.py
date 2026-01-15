@@ -590,7 +590,7 @@ class MusicPlayer:
                     print(f"🗑️ Buffer: Cleaning song #{i+1} (beyond buffer): {song.title[:40]}", flush=True)
                     song.cleanup()
     
-    def play_next(self, error=None):
+    def play_next(self, error: Optional[Exception] = None) -> None:
         """Callback when a song finishes playing."""
         if error:
             print(f"Player error: {error}")

@@ -48,7 +48,7 @@ used_skanduotes_indices = set()
 used_messages_indices = set()
 
 
-def get_random_message():
+def get_random_message() -> str:
     """Get a random message without repeating until all are used."""
     global used_messages_indices
     
@@ -62,7 +62,7 @@ def get_random_message():
     return MESSAGES[chosen]
 
 
-def get_random_skanduote():
+def get_random_skanduote() -> dict:
     """Get a random skanduote without repeating until all are used."""
     global used_skanduotes_indices
     
@@ -84,7 +84,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 scheduler = AsyncIOScheduler(timezone=pytz.timezone(TIMEZONE))
 
 
-async def send_daily_message():
+async def send_daily_message() -> None:
     """Send a random message to the configured channel."""
     channel = bot.get_channel(CHANNEL_ID)
     if channel:
@@ -229,11 +229,11 @@ async def list_messages(ctx):
 
 
 # Simple web server to keep the bot alive on free hosting
-async def health_check(request):
+async def health_check(request: web.Request) -> web.Response:
     return web.Response(text="Bot is alive!")
 
 
-async def run_webserver():
+async def run_webserver() -> None:
     app = web.Application()
     app.router.add_get("/", health_check)
     app.router.add_get("/health", health_check)
@@ -246,7 +246,7 @@ async def run_webserver():
     print(f"🌐 Web server running on port {port}")
 
 
-async def main():
+async def main() -> None:
     # Start web server
     await run_webserver()
     # Start Discord bot
