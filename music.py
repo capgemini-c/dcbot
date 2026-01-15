@@ -827,10 +827,11 @@ class MusicControlView(discord.ui.View):
             print(f"▶️ Current song: {player.queue.current.title}", flush=True)
             embed.add_field(
                 name="▶️ Dabar groja",
-                value=f"**{player.queue.current.title}** ({player.queue.current.duration_str})",
+                value=f"**[{player.queue.current.title[:50]}]({player.queue.current.url})** ({player.queue.current.duration_str})",
                 inline=False
             )
         else:
+            print("⚠️ No current song", flush=True)
             embed.add_field(
                 name="▶️ Dabar groja",
                 value="Niekas",
@@ -838,8 +839,11 @@ class MusicControlView(discord.ui.View):
             )
         
         # Queue - show up to 20 songs with download status
-        if player.queue.queue:
-            print(f"📋 Queue has {len(player.queue.queue)} songs", flush=True)
+        queue_length = len(player.queue.queue)
+        print(f"📋 Queue length: {queue_length}", flush=True)
+        
+        if queue_length > 0:
+            print(f"📋 Building queue list with {queue_length} songs", flush=True)
             queue_text = ""
             for i, song in enumerate(list(player.queue.queue)[:20], 1):
                 # Show download status icon
@@ -849,11 +853,16 @@ class MusicControlView(discord.ui.View):
                     status_icon = "📥"
                 else:
                     status_icon = "⏳"
-                queue_text += f"{status_icon} {i}. {song.title[:45]} ({song.duration_str})\n"
-            if len(player.queue.queue) > 20:
-                queue_text += f"\n... ir dar {len(player.queue.queue) - 20} dainos"
-            embed.add_field(name=f"📋 Eilėje ({len(player.queue.queue)} dainos)", value=queue_text, inline=False)
+                
+                duration = song.duration_str if song.duration_str else "?"
+                queue_text += f"{status_icon} {i}. {song.title[:45]} ({duration})\n"
+            
+            if queue_length > 20:
+                queue_text += f"\n... ir dar {queue_length - 20} dainų"
+            
+            embed.add_field(name=f"📋 Eilėje ({queue_length} {'daina' if queue_length == 1 else 'dainos'})", value=queue_text, inline=False)
         else:
+            print("📭 Queue is empty", flush=True)
             embed.add_field(name="📋 Eilėje", value="Tuščia", inline=False)
         
         # Show playlist download progress if active
@@ -866,7 +875,7 @@ class MusicControlView(discord.ui.View):
                     inline=False
                 )
         
-        print("📤 Sending queue embed", flush=True)
+        print(f"📤 Sending queue embed (current: {player.queue.current is not None}, queue: {queue_length})", flush=True)
         await interaction.followup.send(embed=embed, ephemeral=True)
 
 
@@ -889,6 +898,39 @@ class Music(commands.Cog):
     
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+    
+    @commands.Cog.listener()
+    async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+        """Handle voice state updates - auto disconnect when alone."""
+        # Only process if the bot is in a voice channel in this guild
+        voice_client = discord.utils.get(self.bot.voice_clients, guild=member.guild)
+        if not voice_client:
+            return
+        
+        # Check if the bot is alone in the voice channel
+        channel = voice_client.channel
+        # Filter out bots from the member count
+        human_members = [m for m in channel.members if not m.bot]
+        
+        if len(human_members) == 0:
+            print(f"🚪 All users left voice channel '{channel.name}', disconnecting in 30 seconds...")
+            # Wait 30 seconds before disconnecting (in case someone rejoins quickly)
+            await asyncio.sleep(30)
+            
+            # Re-check if still alone
+            voice_client = discord.utils.get(self.bot.voice_clients, guild=member.guild)
+            if voice_client:
+                channel = voice_client.channel
+                human_members = [m for m in channel.members if not m.bot]
+                
+                if len(human_members) == 0:
+                    print(f"🔌 Auto-disconnecting from '{channel.name}' - channel empty")
+                    player = players.get(member.guild.id)
+                    if player:
+                        await player.disconnect()
+                        # Clean up player
+                        if member.guild.id in players:
+                            del players[member.guild.id]
     
     @app_commands.command(name="play", description="Paleisti dainą arba playlist'ą iš YouTube, SoundCloud arba Spotify")
     @app_commands.describe(query="YouTube/SoundCloud/Spotify nuoroda arba paieškos užklausa")
@@ -1170,28 +1212,33 @@ class Music(commands.Cog):
         """Show the current queue."""
         player = players.get(interaction.guild.id)
         
-        if not player or player.queue.is_empty():
-            await interaction.response.send_message(
-                "📭 Eilė tuščia!",
-                ephemeral=True
-            )
-            return
-        
         embed = discord.Embed(
             title="🎶 Dainų eilė",
             color=discord.Color.purple()
         )
         
+        if not player:
+            embed.description = "📭 Nėra aktyvaus grotuvo!"
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
         # Current song
         if player.queue.current:
             embed.add_field(
                 name="🎵 Dabar groja",
-                value=f"**{player.queue.current.title}** [{player.queue.current.duration_str}]",
+                value=f"**[{player.queue.current.title[:50]}]({player.queue.current.url})** [{player.queue.current.duration_str}]",
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="🎵 Dabar groja",
+                value="Niekas",
                 inline=False
             )
         
         # Queue with download status
-        if player.queue.queue:
+        queue_length = len(player.queue.queue)
+        if queue_length > 0:
             queue_list = []
             for i, song in enumerate(list(player.queue.queue)[:10], 1):
                 # Show download status icon
@@ -1201,16 +1248,20 @@ class Music(commands.Cog):
                     status_icon = "📥"
                 else:
                     status_icon = "⏳"
-                queue_list.append(f"{status_icon} `{i}.` **{song.title}** [{song.duration_str}]")
+                
+                duration = song.duration_str if song.duration_str else "?"
+                queue_list.append(f"{status_icon} `{i}.` **{song.title[:40]}** [{duration}]")
             
             embed.add_field(
-                name=f"📋 Eilėje ({len(player.queue)} dainų)",
+                name=f"📋 Eilėje ({queue_length} {'daina' if queue_length == 1 else 'dainų'})",
                 value="\n".join(queue_list),
                 inline=False
             )
             
-            if len(player.queue) > 10:
-                embed.set_footer(text=f"...ir dar {len(player.queue) - 10} dainų")
+            if queue_length > 10:
+                embed.set_footer(text=f"...ir dar {queue_length - 10} dainų")
+        else:
+            embed.add_field(name="📋 Eilėje", value="Tuščia", inline=False)
         
         await interaction.response.send_message(embed=embed)
     
