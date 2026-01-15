@@ -992,21 +992,28 @@ class MusicPlayer:
         if not self.voice_client or not self.voice_client.is_connected():
             return False
         
-        # Ensure song is downloaded
+        # Ensure song is downloaded - use buffer manager's lock to prevent race conditions
         if not song.is_downloaded:
-            # Check if already downloading via buffer manager
-            if not self.buffer_manager.is_downloading(song):
-                downloaded = await download_song(song.url, song.requester, timeout_seconds=90)
-                if downloaded:
-                    song.local_file = downloaded.local_file
-                    song.duration = downloaded.duration
-                    song.thumbnail = downloaded.thumbnail
-                else:
-                    print(f"❌ Failed to download song: {song.title}", flush=True)
-                    return False
-            else:
-                # Wait for buffer manager to finish downloading
-                while self.buffer_manager.is_downloading(song) and not song.is_downloaded:
+            async with self.buffer_manager._downloading_lock:
+                # Double-check after acquiring lock
+                if not song.is_downloaded and not self.buffer_manager.is_downloading(song):
+                    self.buffer_manager.mark_downloading(song)
+                    try:
+                        downloaded = await download_song(song.url, song.requester, timeout_seconds=90)
+                        if downloaded:
+                            song.local_file = downloaded.local_file
+                            song.duration = downloaded.duration
+                            song.thumbnail = downloaded.thumbnail
+                        else:
+                            print(f"❌ Failed to download song: {song.title}", flush=True)
+                            return False
+                    finally:
+                        self.buffer_manager.unmark_downloading(song)
+            
+            # If we didn't download (because buffer manager was already downloading),
+            # wait for it to finish
+            if not song.is_downloaded:
+                while self.buffer_manager.is_downloading(song):
                     await asyncio.sleep(0.5)
                 
                 if not song.is_downloaded:
