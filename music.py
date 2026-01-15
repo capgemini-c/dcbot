@@ -495,6 +495,101 @@ async def get_song_info(query: str, requester: str, timeout_seconds: int = 120) 
     return await download_song(query, requester, timeout_seconds)
 
 
+class DownloadBufferManager:
+    """Manages download buffer for songs in the queue."""
+    
+    def __init__(self, buffer_size: int = 3):
+        self.buffer_size = buffer_size
+        self.currently_downloading: set[str] = set()
+        self._downloading_lock = asyncio.Lock()
+    
+    def is_downloading(self, song: Song) -> bool:
+        """Check if a song is currently being downloaded."""
+        return song.title in self.currently_downloading
+    
+    def get_downloading_count(self) -> int:
+        """Get count of songs currently downloading."""
+        return len(self.currently_downloading)
+    
+    def mark_downloading(self, song: Song) -> None:
+        """Mark a song as currently downloading."""
+        self.currently_downloading.add(song.title)
+    
+    def unmark_downloading(self, song: Song) -> None:
+        """Unmark a song as downloading."""
+        self.currently_downloading.discard(song.title)
+    
+    def get_songs_to_download(self, queue: MusicQueue) -> List[Song]:
+        """
+        Get list of songs that should be in the download buffer.
+        Returns songs that need to be downloaded (not already downloaded).
+        """
+        songs_to_download = []
+        
+        # Include current song if not downloaded
+        if queue.current and not queue.current.is_downloaded:
+            songs_to_download.append(queue.current)
+        
+        # Calculate how many more songs we need
+        songs_needed = self.buffer_size - (1 if queue.current else 0)
+        
+        # Add next songs from queue that aren't downloaded
+        for song in list(queue.queue)[:songs_needed]:
+            if not song.is_downloaded:
+                songs_to_download.append(song)
+        
+        return songs_to_download
+    
+    def get_songs_to_cleanup(self, queue: MusicQueue) -> List[Song]:
+        """
+        Get list of songs beyond the buffer that should be cleaned up.
+        """
+        songs_to_cleanup = []
+        
+        # Songs to keep in buffer
+        songs_needed = self.buffer_size - (1 if queue.current else 0)
+        
+        # Songs beyond the buffer should be cleaned up
+        for song in list(queue.queue)[songs_needed:]:
+            if song.is_downloaded:
+                songs_to_cleanup.append(song)
+        
+        return songs_to_cleanup
+    
+    async def maintain_buffer(self, queue: MusicQueue) -> None:
+        """
+        Maintain a rolling buffer of downloaded songs.
+        Downloads songs in buffer, cleans up songs beyond buffer.
+        """
+        async with self._downloading_lock:
+            # Get songs that need to be downloaded
+            songs_to_download = self.get_songs_to_download(queue)
+            
+            # Download each song
+            for song in songs_to_download:
+                if not song.is_downloaded and not self.is_downloading(song):
+                    self.mark_downloading(song)
+                    print(f"📥 Buffer: Downloading {song.title[:40]}...", flush=True)
+                    
+                    try:
+                        downloaded = await download_song(song.url, song.requester, timeout_seconds=90)
+                        if downloaded:
+                            song.local_file = downloaded.local_file
+                            song.duration = downloaded.duration
+                            song.thumbnail = downloaded.thumbnail
+                            print(f"✅ Buffer: Downloaded {song.title[:40]}", flush=True)
+                        else:
+                            print(f"❌ Buffer: Failed to download {song.title[:40]}", flush=True)
+                    finally:
+                        self.unmark_downloading(song)
+            
+            # Cleanup songs beyond buffer
+            songs_to_cleanup = self.get_songs_to_cleanup(queue)
+            for i, song in enumerate(songs_to_cleanup):
+                print(f"🗑️ Buffer: Cleaning song beyond buffer: {song.title[:40]}", flush=True)
+                song.cleanup()
+
+
 class MusicPlayer:
     """Handles music playback for a guild."""
     
@@ -507,9 +602,7 @@ class MusicPlayer:
         self._player_task: Optional[asyncio.Task] = None
         self.now_playing_message: Optional[discord.Message] = None  # Store message to update
         self.playlist_info: dict = {'total': 0, 'downloaded': 0}  # Track playlist progress
-        self._download_buffer_size = 3  # Keep current + next 2 songs downloaded
-        self._downloading_lock = asyncio.Lock()  # Prevent concurrent buffer updates
-        self._currently_downloading: set = set()  # Track songs currently being downloaded
+        self.buffer_manager = DownloadBufferManager(buffer_size=3)  # Delegate to buffer manager
     
     async def connect(self, channel: discord.VoiceChannel) -> bool:
         """Connect to a voice channel."""
@@ -546,49 +639,8 @@ class MusicPlayer:
             self._player_task.cancel()
     
     async def maintain_download_buffer(self):
-        """
-        Maintain a rolling buffer of downloaded songs.
-        Downloads current + next N songs, cleans up old ones.
-        """
-        async with self._downloading_lock:
-            # Get songs that should be downloaded (current + next N in queue)
-            songs_to_keep = []
-            
-            if self.queue.current and not self.queue.current.is_downloaded:
-                songs_to_keep.append(self.queue.current)
-            
-            # Determine how many songs to download from queue
-            # If current exists, download N-1 more. If no current, download N.
-            songs_needed = self._download_buffer_size - (1 if self.queue.current else 0)
-            
-            # Add next songs from queue
-            for i, song in enumerate(list(self.queue.queue)[:songs_needed]):
-                if not song.is_downloaded:
-                    songs_to_keep.append(song)
-            
-            # Download any songs that aren't downloaded yet
-            for song in songs_to_keep:
-                if not song.is_downloaded:
-                    self._currently_downloading.add(song.title)
-                    print(f"📥 Buffer: Downloading {song.title[:40]}...", flush=True)
-                    downloaded = await download_song(song.url, song.requester, timeout_seconds=90)
-                    self._currently_downloading.discard(song.title)
-                    if downloaded:
-                        song.local_file = downloaded.local_file
-                        song.duration = downloaded.duration
-                        song.thumbnail = downloaded.thumbnail
-                        print(f"✅ Buffer: Downloaded {song.title[:40]}", flush=True)
-                    else:
-                        print(f"❌ Buffer: Failed to download {song.title[:40]}", flush=True)
-            
-            # Cleanup songs beyond the buffer (keeping current + next N)
-            songs_in_buffer_count = (1 if self.queue.current else 0) + songs_needed
-            
-            # Clean up songs beyond the buffer
-            for i, song in enumerate(list(self.queue.queue)[songs_needed:], start=songs_needed):
-                if song.is_downloaded:
-                    print(f"🗑️ Buffer: Cleaning song #{i+1} (beyond buffer): {song.title[:40]}", flush=True)
-                    song.cleanup()
+        """Maintain a rolling buffer of downloaded songs (delegates to buffer manager)."""
+        await self.buffer_manager.maintain_buffer(self.queue)
     
     def play_next(self, error: Optional[Exception] = None) -> None:
         """Callback when a song finishes playing."""
@@ -691,8 +743,8 @@ class MusicPlayer:
                     embed.add_field(name="Užsakė", value=song.requester, inline=True)
                     
                     # Show downloading status
-                    if self._currently_downloading:
-                        downloading_count = len(self._currently_downloading)
+                    if self.buffer_manager.get_downloading_count() > 0:
+                        downloading_count = self.buffer_manager.get_downloading_count()
                         embed.add_field(
                             name="📥 Kraunama", 
                             value=f"{downloading_count} daina{'s' if downloading_count > 1 else ''}", 
@@ -886,7 +938,7 @@ class MusicControlView(discord.ui.View):
                 # Show download status icon
                 if song.is_downloaded:
                     status_icon = "✅"
-                elif song.title in player._currently_downloading:
+                elif player.buffer_manager.is_downloading(song):
                     status_icon = "📥"
                 else:
                     status_icon = "⏳"
@@ -1270,7 +1322,7 @@ class Music(commands.Cog):
                 # Show download status icon
                 if song.is_downloaded:
                     status_icon = "✅"
-                elif song.title in player._currently_downloading:
+                elif player.buffer_manager.is_downloading(song):
                     status_icon = "📥"
                 else:
                     status_icon = "⏳"
