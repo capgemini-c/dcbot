@@ -994,14 +994,24 @@ class MusicPlayer:
         
         # Ensure song is downloaded
         if not song.is_downloaded:
-            downloaded = await download_song(song.url, song.requester, timeout_seconds=90)
-            if downloaded:
-                song.local_file = downloaded.local_file
-                song.duration = downloaded.duration
-                song.thumbnail = downloaded.thumbnail
+            # Check if already downloading via buffer manager
+            if not self.buffer_manager.is_downloading(song):
+                downloaded = await download_song(song.url, song.requester, timeout_seconds=90)
+                if downloaded:
+                    song.local_file = downloaded.local_file
+                    song.duration = downloaded.duration
+                    song.thumbnail = downloaded.thumbnail
+                else:
+                    print(f"❌ Failed to download song: {song.title}", flush=True)
+                    return False
             else:
-                print(f"❌ Failed to download song: {song.title}", flush=True)
-                return False
+                # Wait for buffer manager to finish downloading
+                while self.buffer_manager.is_downloading(song) and not song.is_downloaded:
+                    await asyncio.sleep(0.5)
+                
+                if not song.is_downloaded:
+                    print(f"❌ Failed to download song: {song.title}", flush=True)
+                    return False
         
         try:
             if not os.path.exists(song.local_file):
