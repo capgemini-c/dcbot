@@ -130,22 +130,28 @@ class BrowserAudioStreamer:
         options.add_argument("--disable-popup-blocking")
         options.add_argument("--disable-infobars")
 
-        # Use system Chromium binary if available (Docker)
-        for path in [
-            "/usr/bin/chromium",
-            "/usr/bin/chromium-browser",
-            "/usr/bin/google-chrome",
-        ]:
-            if os.path.exists(path):
-                options.binary_location = path
-                break
+        # Use system Chromium binary — check env var first, then known paths
+        chrome_bin = os.environ.get("CHROME_BIN")
+        if chrome_bin and os.path.exists(chrome_bin):
+            options.binary_location = chrome_bin
+        else:
+            for path in [
+                "/usr/bin/chromium",
+                "/usr/bin/chromium-browser",
+                "/usr/bin/google-chrome",
+            ]:
+                if os.path.exists(path):
+                    options.binary_location = path
+                    break
 
         # Route Chrome audio to the guild's PulseAudio sink
         env = os.environ.copy()
         env["PULSE_SINK"] = sink_name
 
         try:
-            chromedriver_path = "/usr/bin/chromedriver"
+            chromedriver_path = os.environ.get(
+                "CHROMEDRIVER_PATH", "/usr/bin/chromedriver"
+            )
             if os.path.exists(chromedriver_path):
                 service = Service(
                     executable_path=chromedriver_path, env=env

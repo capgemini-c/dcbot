@@ -17,8 +17,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     chromium \
     chromium-driver \
     pulseaudio \
+    pulseaudio-utils \
+    dbus \
     xvfb \
     && rm -rf /var/lib/apt/lists/*
+
+# Configure PulseAudio to run as root in container (Render runs as root)
+RUN mkdir -p /root/.config/pulse && \
+    echo "default-server = unix:/tmp/pulseaudio.socket" > /root/.config/pulse/client.conf && \
+    echo "autospawn = no" >> /root/.config/pulse/client.conf
+
+# Set Chromium environment so Selenium can find it
+ENV CHROME_BIN=/usr/bin/chromium
+ENV CHROMEDRIVER_PATH=/usr/bin/chromedriver
 
 WORKDIR /app
 
@@ -29,5 +40,8 @@ RUN pip install --no-cache-dir --no-binary PyNaCl PyNaCl>=1.5.0
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
+
+# Ensure start.sh is executable
+RUN chmod +x start.sh
 
 CMD ["bash", "start.sh"]
