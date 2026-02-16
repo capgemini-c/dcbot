@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: dcbot
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    envVars:
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: CHANNEL_ID
+        sync: false
+      - key: TIMEZONE
+        value: Europe/Vilnius
+      - key: GAME_USER_IDS
+        sync: false
