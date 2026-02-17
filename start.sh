@@ -12,6 +12,10 @@ echo "  Xvfb: $(which Xvfb 2>/dev/null || echo 'NOT FOUND')"
 # ── 1. Start Xvfb FIRST (PulseAudio/D-Bus may need DISPLAY) ──
 echo "🖥️ Starting Xvfb virtual display..."
 export DISPLAY=:99
+
+# Clean up stale Xvfb lock files from previous runs
+rm -f /tmp/.X99-lock /tmp/.X11-unix/X99 2>/dev/null || true
+
 Xvfb :99 -screen 0 1280x720x24 -ac +extension GLX +render -noreset &
 XVFB_PID=$!
 sleep 1
