@@ -22,10 +22,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     xvfb \
     && rm -rf /var/lib/apt/lists/*
 
-# Configure PulseAudio to run as root in container (Render runs as root)
-RUN mkdir -p /root/.config/pulse && \
-    echo "default-server = unix:/tmp/pulseaudio.socket" > /root/.config/pulse/client.conf && \
-    echo "autospawn = no" >> /root/.config/pulse/client.conf
+# Configure PulseAudio for running as root in a container
+# 1. Allow PulseAudio to run as root in system mode
+RUN mkdir -p /var/run/pulse /var/lib/pulse /root/.config/pulse && \
+    echo "autospawn = no" > /root/.config/pulse/client.conf && \
+    echo "daemon-binary = /usr/bin/pulseaudio" >> /root/.config/pulse/client.conf
+
+# 2. Create a minimal system-mode PulseAudio config (no D-Bus needed)
+RUN echo "load-module module-native-protocol-unix auth-anonymous=1" > /etc/pulse/system.pa && \
+    echo "load-module module-null-sink" >> /etc/pulse/system.pa && \
+    echo "load-module module-always-sink" >> /etc/pulse/system.pa && \
+    echo "load-module module-rescue-streams" >> /etc/pulse/system.pa
 
 # Set Chromium environment so Selenium can find it
 ENV CHROME_BIN=/usr/bin/chromium
