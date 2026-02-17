@@ -534,12 +534,27 @@ class MusicPlayer:
     async def connect(self, channel: discord.VoiceChannel) -> bool:
         """Connect to a voice channel."""
         try:
+            print(
+                f"🔌 Connecting to voice channel: {channel.name} "
+                f"(guild: {self.guild.name})",
+                flush=True,
+            )
             existing_vc = discord.utils.get(
                 self.bot.voice_clients, guild=self.guild
             )
             if existing_vc:
                 if existing_vc.channel.id != channel.id:
+                    print(
+                        f"   Moving from {existing_vc.channel.name} "
+                        f"to {channel.name}",
+                        flush=True,
+                    )
                     await existing_vc.move_to(channel)
+                else:
+                    print(
+                        "   Already in this channel, reusing",
+                        flush=True,
+                    )
                 self.voice_client = existing_vc
             else:
                 self.voice_client = await channel.connect()
@@ -548,6 +563,10 @@ class MusicPlayer:
                 f"✅ Connected to voice channel: {channel.name}",
                 flush=True,
             )
+
+            # Prewarm browser in background after connecting
+            asyncio.create_task(self._prewarm_browser())
+
             return True
         except Exception as e:
             print(
@@ -558,6 +577,16 @@ class MusicPlayer:
             import traceback
             traceback.print_exc()
             return False
+
+    async def _prewarm_browser(self) -> None:
+        """Prewarm the browser for this guild in the background."""
+        try:
+            await browser_streamer.prewarm(self.guild.id)
+        except Exception as e:
+            print(
+                f"⚠️ Browser prewarm error: {type(e).__name__}: {e}",
+                flush=True,
+            )
 
     async def disconnect(self) -> None:
         """Disconnect from voice channel and clean up browser."""
@@ -654,19 +683,34 @@ class MusicPlayer:
 
     async def play(self, song: Song) -> bool:
         """Play a song via browser + PulseAudio streaming."""
+        import time as _time
+        play_start = _time.time()
+        print(
+            f"🎵 MusicPlayer.play() called: '{song.title}' "
+            f"({song.url[:60]})",
+            flush=True,
+        )
+
         if not self.voice_client or not self.voice_client.is_connected():
+            print("❌ Voice client not connected!", flush=True)
             return False
 
         try:
             # Ensure browser exists for this guild
+            print("   Step 1: Getting browser...", flush=True)
             driver = await browser_streamer.get_or_create_browser(
                 self.guild.id
             )
             if not driver:
                 print("❌ Failed to create browser", flush=True)
                 return False
+            print(
+                f"   Step 1 done ({_time.time() - play_start:.1f}s)",
+                flush=True,
+            )
 
             # Navigate to the YouTube video and start playback
+            print("   Step 2: Playing video in browser...", flush=True)
             success = await browser_streamer.play_video(
                 self.guild.id, song.url
             )
@@ -675,8 +719,13 @@ class MusicPlayer:
                     f"❌ Failed to play video: {song.title}", flush=True
                 )
                 return False
+            print(
+                f"   Step 2 done ({_time.time() - play_start:.1f}s)",
+                flush=True,
+            )
 
             # Update song metadata from the video page
+            print("   Step 3: Getting video metadata...", flush=True)
             loop = asyncio.get_event_loop()
             info = await loop.run_in_executor(
                 None, browser_streamer.get_video_info, driver
@@ -689,17 +738,36 @@ class MusicPlayer:
                 'Unknown', 'Kraunama...',
             ):
                 song.title = info['title']
+            print(
+                f"   Step 3 done ({_time.time() - play_start:.1f}s) "
+                f"- title='{song.title[:40]}' "
+                f"duration={song.duration}s",
+                flush=True,
+            )
 
             # Create FFmpeg source from PulseAudio monitor
+            print(
+                "   Step 4: Creating FFmpeg source and "
+                "starting Discord playback...",
+                flush=True,
+            )
             source = browser_streamer.get_ffmpeg_source(self.guild.id)
 
             def after_play(error: Optional[Exception]) -> None:
                 if error:
                     print(f"❌ Playback error: {error}", flush=True)
+                else:
+                    print("🔇 FFmpeg playback stopped", flush=True)
                 self.play_next(error)
 
             self.voice_client.play(source, after=after_play)
             self.queue.current = song
+            print(
+                f"   Step 4 done ({_time.time() - play_start:.1f}s) "
+                f"- voice_client.is_playing()="
+                f"{self.voice_client.is_playing()}",
+                flush=True,
+            )
 
             # Start monitoring video end state
             if self._monitor_task:
@@ -708,6 +776,12 @@ class MusicPlayer:
                 self._monitor_video()
             )
 
+            total_elapsed = _time.time() - play_start
+            print(
+                f"✅ Now playing: '{song.title}' "
+                f"(total setup: {total_elapsed:.1f}s)",
+                flush=True,
+            )
             return True
         except Exception as e:
             print(
@@ -755,6 +829,7 @@ class MusicPlayer:
 
     async def start_player_loop(self) -> None:
         """Main player loop - plays songs from queue sequentially."""
+        print("🔄 Player loop started", flush=True)
         while True:
             self._play_next_event.clear()
 
@@ -769,11 +844,30 @@ class MusicPlayer:
                     break
                 continue
 
+            print(
+                f"🔄 Player loop: next song = '{song.title}' "
+                f"(queue remaining: {len(self.queue)})",
+                flush=True,
+            )
+
             if not await self.play(song):
+                print(
+                    f"⚠️ Player loop: play() failed for "
+                    f"'{song.title}', skipping",
+                    flush=True,
+                )
                 continue
 
             await self._update_now_playing_message(song)
+            print(
+                "⏳ Player loop: waiting for song to finish...",
+                flush=True,
+            )
             await self._play_next_event.wait()
+            print(
+                "🔔 Player loop: play_next_event triggered",
+                flush=True,
+            )
 
     def skip(self) -> bool:
         """Skip the current song."""
@@ -1073,37 +1167,54 @@ class Music(commands.Cog):
         self, interaction: discord.Interaction, query: str
     ) -> None:
         """Play a song or playlist from YouTube."""
+        print(
+            f"▶️ /play command: query='{query}' "
+            f"user={interaction.user.display_name} "
+            f"guild={interaction.guild.name}",
+            flush=True,
+        )
+
         is_valid, error_msg = validate_user_in_voice(interaction)
         if not is_valid:
+            print("   ❌ User not in voice channel", flush=True)
             await interaction.response.send_message(
                 error_msg, ephemeral=True
             )
             return
 
         await interaction.response.defer()
+        print("   Interaction deferred", flush=True)
 
         voice_channel = interaction.user.voice.channel
         player = get_player(self.bot, interaction.guild)
         player.text_channel = interaction.channel
 
         # Connect to voice channel
+        print(
+            f"   Connecting to voice: {voice_channel.name}",
+            flush=True,
+        )
         if not await player.connect(voice_channel):
             await interaction.followup.send(
                 "❌ Nepavyko prisijungti prie voice kanalo!"
             )
             return
+        print("   Voice connected", flush=True)
 
         # Ensure browser is ready for this guild
+        print("   Ensuring browser is ready...", flush=True)
         browser = await browser_streamer.get_or_create_browser(
             interaction.guild.id
         )
         if not browser:
+            print("   ❌ Browser creation failed", flush=True)
             await interaction.followup.send(
                 "❌ Nepavyko paleisti naršyklės! "
                 "Patikrink ar Chromium ir PulseAudio veikia.",
                 ephemeral=True,
             )
             return
+        print("   Browser ready", flush=True)
 
         requester = interaction.user.display_name
 
@@ -1112,7 +1223,7 @@ class Music(commands.Cog):
             URLValidator.is_url(query)
             and URLValidator.is_playlist(query)
         ):
-            # Playlist URL
+            print("   Query type: PLAYLIST URL", flush=True)
             entries = await browser_streamer.get_playlist_videos(
                 interaction.guild.id, query
             )
@@ -1120,7 +1231,12 @@ class Music(commands.Cog):
                 await self._add_playlist_to_queue(
                     player, entries, requester, interaction
                 )
+                print(
+                    f"   Added {len(entries)} playlist songs to queue",
+                    flush=True,
+                )
             else:
+                print("   ❌ No playlist entries found", flush=True)
                 await interaction.followup.send(
                     "❌ Nepavyko gauti playlist'o dainų. "
                     "Patikrink nuorodą."
@@ -1128,7 +1244,7 @@ class Music(commands.Cog):
                 return
 
         elif URLValidator.is_url(query):
-            # Direct URL (YouTube or other)
+            print("   Query type: DIRECT URL", flush=True)
             song = Song(
                 title="Kraunama...",
                 url=query,
@@ -1137,17 +1253,26 @@ class Music(commands.Cog):
             await self._add_single_song_to_queue(
                 player, song, interaction
             )
+            print(f"   Added song to queue: {query[:60]}", flush=True)
 
         else:
-            # Search query - use Selenium to find video
+            print(
+                f"   Query type: SEARCH - '{query}'", flush=True
+            )
             result = await browser_streamer.search_youtube(
                 interaction.guild.id, query
             )
             if not result:
+                print("   ❌ Search returned no results", flush=True)
                 await interaction.followup.send(
                     "❌ Nepavyko rasti dainos. Pabandyk kitą paiešką."
                 )
                 return
+            print(
+                f"   Search found: '{result['title'][:40]}' "
+                f"- {result['url']}",
+                flush=True,
+            )
             song = Song(
                 title=result['title'],
                 url=result['url'],
@@ -1158,7 +1283,14 @@ class Music(commands.Cog):
             )
 
         # Start playing if not already
+        print(
+            f"   Starting player if needed "
+            f"(is_playing={player.voice_client.is_playing()}, "
+            f"task={player._player_task is not None and not player._player_task.done() if player._player_task else 'None'})",
+            flush=True,
+        )
         self._start_player_if_needed(player)
+        print("   /play command complete", flush=True)
 
     @app_commands.command(
         name="testplay",
