@@ -27,6 +27,8 @@ from selenium.common.exceptions import (
 )
 
 MAX_PLAYLIST_SONGS = 50
+VIDEO_READY_TIMEOUT = 15
+VIDEO_READY_POLL_INTERVAL = 0.5
 
 
 def _log(msg: str) -> None:
@@ -49,6 +51,13 @@ class BrowserAudioStreamer:
         self._sink_modules: Dict[int, int] = {}
         self._cookies_accepted: Dict[int, bool] = {}
         self._warmed_up: Dict[int, bool] = {}
+        self._guild_locks: Dict[int, asyncio.Lock] = {}
+
+    def _get_lock(self, guild_id: int) -> asyncio.Lock:
+        """Get or create an asyncio lock for a guild."""
+        if guild_id not in self._guild_locks:
+            self._guild_locks[guild_id] = asyncio.Lock()
+        return self._guild_locks[guild_id]
 
     def _get_sink_name(self, guild_id: int) -> str:
         """Get PulseAudio sink name for a guild."""
@@ -111,6 +120,23 @@ class BrowserAudioStreamer:
                 _log(
                     f"⚠️ Error removing sink: {type(e).__name__}: {e}"
                 )
+
+    def _verify_audio_routing(self, guild_id: int) -> None:
+        """Log PulseAudio sink-inputs to verify Chrome routes correctly."""
+        try:
+            result = subprocess.run(
+                ["pactl", "list", "sink-inputs", "short"],
+                capture_output=True, text=True, timeout=5,
+            )
+            _log(f"🔈 PulseAudio sink-inputs:\n{result.stdout.strip()}")
+
+            result2 = subprocess.run(
+                ["pactl", "list", "sinks", "short"],
+                capture_output=True, text=True, timeout=5,
+            )
+            _log(f"🔈 PulseAudio sinks:\n{result2.stdout.strip()}")
+        except Exception as e:
+            _log(f"⚠️ Could not list PulseAudio info: {e}")
 
     # ── Chrome browser management ───────────────────────────────
 
@@ -183,34 +209,42 @@ class BrowserAudioStreamer:
     async def get_or_create_browser(
         self, guild_id: int
     ) -> Optional[webdriver.Chrome]:
-        """Get an existing browser or create a new one for the guild."""
-        if guild_id in self._browsers:
-            try:
-                self._browsers[guild_id].title
-                _log(
-                    f"♻️ Reusing existing browser for guild {guild_id}"
-                )
-                return self._browsers[guild_id]
-            except WebDriverException:
-                _log(
-                    f"⚠️ Browser died for guild {guild_id}, recreating"
-                )
-                self._browsers.pop(guild_id, None)
+        """Get an existing browser or create a new one for the guild.
 
-        loop = asyncio.get_event_loop()
+        Uses a per-guild lock to prevent concurrent creation.
+        """
+        lock = self._get_lock(guild_id)
+        async with lock:
+            # Check again inside lock (another task may have created it)
+            if guild_id in self._browsers:
+                try:
+                    self._browsers[guild_id].title
+                    _log(
+                        f"♻️ Reusing existing browser for "
+                        f"guild {guild_id}"
+                    )
+                    return self._browsers[guild_id]
+                except WebDriverException:
+                    _log(
+                        f"⚠️ Browser died for guild {guild_id}, "
+                        f"recreating"
+                    )
+                    self._browsers.pop(guild_id, None)
 
-        # Create PulseAudio sink if needed
-        if guild_id not in self._sink_modules:
-            ok = await loop.run_in_executor(
-                None, self._setup_audio_sink, guild_id
+            loop = asyncio.get_event_loop()
+
+            # Create PulseAudio sink if needed
+            if guild_id not in self._sink_modules:
+                ok = await loop.run_in_executor(
+                    None, self._setup_audio_sink, guild_id
+                )
+                if not ok:
+                    return None
+
+            # Create browser
+            return await loop.run_in_executor(
+                None, self._create_browser_sync, guild_id
             )
-            if not ok:
-                return None
-
-        # Create browser
-        return await loop.run_in_executor(
-            None, self._create_browser_sync, guild_id
-        )
 
     # ── Prewarm ─────────────────────────────────────────────────
 
@@ -224,13 +258,13 @@ class BrowserAudioStreamer:
 
         driver = await self.get_or_create_browser(guild_id)
         if not driver:
-            _log(f"❌ Prewarm failed: could not create browser")
+            _log("❌ Prewarm failed: could not create browser")
             return False
 
         # Accept cookies and load YouTube homepage
         if not self._cookies_accepted.get(guild_id, False):
             loop = asyncio.get_event_loop()
-            _log(f"🍪 Prewarming: navigating to YouTube for cookies...")
+            _log("🍪 Prewarming: navigating to YouTube for cookies...")
             await loop.run_in_executor(
                 None, self._ensure_cookies_sync, driver, guild_id
             )
@@ -310,6 +344,63 @@ class BrowserAudioStreamer:
 
     # ── Video playback ──────────────────────────────────────────
 
+    def _wait_for_video_ready(
+        self, driver: webdriver.Chrome
+    ) -> bool:
+        """Wait until video has actually started playing (has audio)."""
+        _log("   Waiting for video to buffer and play...")
+        start = time.time()
+        while time.time() - start < VIDEO_READY_TIMEOUT:
+            state = driver.execute_script("""
+                const v = document.querySelector('video');
+                if (!v) return null;
+                return {
+                    readyState: v.readyState,
+                    currentTime: v.currentTime,
+                    paused: v.paused,
+                    duration: isNaN(v.duration) ? null : v.duration
+                };
+            """)
+            if state and state.get('readyState', 0) >= 3 \
+                    and state.get('currentTime', 0) > 0:
+                elapsed = time.time() - start
+                _log(
+                    f"   ✅ Video is playing: readyState="
+                    f"{state['readyState']} "
+                    f"currentTime={state['currentTime']:.1f}s "
+                    f"duration={state.get('duration')} "
+                    f"(waited {elapsed:.1f}s)"
+                )
+                return True
+            # If paused, try to play again
+            if state and state.get('paused'):
+                driver.execute_script("""
+                    const v = document.querySelector('video');
+                    if (v && v.paused) v.play().catch(() => {});
+                """)
+            time.sleep(VIDEO_READY_POLL_INTERVAL)
+
+        elapsed = time.time() - start
+        final = driver.execute_script("""
+            const v = document.querySelector('video');
+            if (!v) return null;
+            return {
+                readyState: v.readyState,
+                currentTime: v.currentTime,
+                paused: v.paused,
+                muted: v.muted,
+                volume: v.volume,
+                duration: isNaN(v.duration) ? null : v.duration,
+                networkState: v.networkState,
+                error: v.error ? v.error.message : null,
+                src: v.src ? v.src.substring(0, 100) : 'none'
+            };
+        """)
+        _log(
+            f"   ⚠️ Video not ready after {elapsed:.1f}s: {final}"
+        )
+        return False
+
     def _play_video_sync(
         self,
         driver: webdriver.Chrome,
@@ -322,7 +413,7 @@ class BrowserAudioStreamer:
         try:
             self._ensure_cookies_sync(driver, guild_id)
 
-            _log(f"   Navigating to video URL...")
+            _log("   Navigating to video URL...")
             nav_start = time.time()
             driver.get(url)
             nav_elapsed = time.time() - nav_start
@@ -338,22 +429,6 @@ class BrowserAudioStreamer:
             wait_elapsed = time.time() - wait_start
             _log(f"   <video> element found in {wait_elapsed:.1f}s")
 
-            # Get initial video state
-            video_state = driver.execute_script("""
-                const v = document.querySelector('video');
-                if (!v) return null;
-                return {
-                    paused: v.paused,
-                    muted: v.muted,
-                    volume: v.volume,
-                    readyState: v.readyState,
-                    currentTime: v.currentTime,
-                    duration: isNaN(v.duration) ? null : v.duration,
-                    src: v.src ? v.src.substring(0, 80) : 'none'
-                };
-            """)
-            _log(f"   Video state before play: {video_state}")
-
             # Unmute and start playback
             _log("   Setting video: muted=false, volume=1.0, play()")
             driver.execute_script("""
@@ -361,9 +436,7 @@ class BrowserAudioStreamer:
                 if (video) {
                     video.muted = false;
                     video.volume = 1.0;
-                    if (video.paused) {
-                        video.play().catch(() => {});
-                    }
+                    video.play().catch(() => {});
                 }
             """)
 
@@ -390,30 +463,27 @@ class BrowserAudioStreamer:
                 else:
                     _log("   No ad skip buttons found")
             except Exception as e:
-                _log(f"   Ad skip check error: {type(e).__name__}: {e}")
+                _log(
+                    f"   Ad skip check error: "
+                    f"{type(e).__name__}: {e}"
+                )
 
             # Ensure playback after potential ad skip
             driver.execute_script("""
                 const video = document.querySelector('video');
-                if (video && video.paused) {
-                    video.play().catch(() => {});
+                if (video) {
+                    video.muted = false;
+                    video.volume = 1.0;
+                    if (video.paused) video.play().catch(() => {});
                 }
             """)
 
-            # Verify final state
-            final_state = driver.execute_script("""
-                const v = document.querySelector('video');
-                if (!v) return null;
-                return {
-                    paused: v.paused,
-                    muted: v.muted,
-                    volume: v.volume,
-                    readyState: v.readyState,
-                    currentTime: v.currentTime,
-                    duration: isNaN(v.duration) ? null : v.duration
-                };
-            """)
-            _log(f"   Video state after play: {final_state}")
+            # Wait for video to actually buffer and start playing
+            if not self._wait_for_video_ready(driver):
+                _log("⚠️ Video may not be playing, continuing anyway")
+
+            # Verify audio routing
+            self._verify_audio_routing(guild_id)
 
             total_elapsed = time.time() - total_start
             _log(
@@ -497,7 +567,7 @@ class BrowserAudioStreamer:
                     f"'{title[:50]}' - {url}"
                 )
                 return {"title": title.strip(), "url": url}
-            _log(f"⚠️ Search result missing title or URL")
+            _log("⚠️ Search result missing title or URL")
             return None
         except TimeoutException:
             elapsed = time.time() - start_time
@@ -549,7 +619,6 @@ class BrowserAudioStreamer:
             nav_elapsed = time.time() - start_time
             _log(f"   Playlist page loaded in {nav_elapsed:.1f}s")
 
-            # Wait for playlist item renderers
             _log("   Waiting for playlist items...")
             WebDriverWait(driver, 10).until(
                 EC.presence_of_element_located(
@@ -557,7 +626,6 @@ class BrowserAudioStreamer:
                 )
             )
 
-            # Scroll to load more items
             _log("   Scrolling to load playlist entries...")
             last_count = 0
             for scroll_num in range(10):
