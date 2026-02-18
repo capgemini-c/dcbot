@@ -563,10 +563,6 @@ class MusicPlayer:
                 f"✅ Connected to voice channel: {channel.name}",
                 flush=True,
             )
-
-            # Prewarm browser in background after connecting
-            asyncio.create_task(self._prewarm_browser())
-
             return True
         except Exception as e:
             print(
@@ -577,16 +573,6 @@ class MusicPlayer:
             import traceback
             traceback.print_exc()
             return False
-
-    async def _prewarm_browser(self) -> None:
-        """Prewarm the browser for this guild in the background."""
-        try:
-            await browser_streamer.prewarm(self.guild.id)
-        except Exception as e:
-            print(
-                f"⚠️ Browser prewarm error: {type(e).__name__}: {e}",
-                flush=True,
-            )
 
     async def disconnect(self) -> None:
         """Disconnect from voice channel and clean up browser."""

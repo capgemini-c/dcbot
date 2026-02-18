@@ -248,45 +248,6 @@ class BrowserAudioStreamer:
                 None, self._create_browser_sync, guild_id
             )
 
-    # ── Prewarm ─────────────────────────────────────────────────
-
-    async def prewarm(self, guild_id: int) -> bool:
-        """
-        Prewarm: create browser + sink + accept cookies.
-        Uses the browser lock so it won't conflict with play commands.
-        """
-        _log(f"🔥 Prewarming browser for guild {guild_id}...")
-        start_time = time.time()
-
-        driver = await self.get_or_create_browser(guild_id)
-        if not driver:
-            _log("❌ Prewarm failed: could not create browser")
-            return False
-
-        if not self._cookies_accepted.get(guild_id, False):
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(
-                None, self._prewarm_cookies_sync, guild_id
-            )
-
-        elapsed = time.time() - start_time
-        _log(
-            f"✅ Browser prewarmed for guild {guild_id} "
-            f"in {elapsed:.1f}s"
-        )
-        return True
-
-    def _prewarm_cookies_sync(self, guild_id: int) -> None:
-        """Navigate to YouTube and accept cookies (thread-safe)."""
-        lock = self._get_browser_lock(guild_id)
-        driver = self._browsers.get(guild_id)
-        if not driver:
-            return
-        with lock:
-            _log("🍪 Prewarm: navigating to YouTube for cookies...")
-            self._ensure_cookies_sync(driver, guild_id)
-            _log("🍪 Prewarm: cookies handled")
-
     # ── Cookie consent ──────────────────────────────────────────
 
     def _accept_cookies_sync(self, driver: webdriver.Chrome) -> bool:
