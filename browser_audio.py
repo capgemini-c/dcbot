@@ -9,6 +9,7 @@ its own Chrome instance and PulseAudio null sink for audio isolation.
 import asyncio
 import os
 import subprocess
+import threading
 import time
 import urllib.parse
 from typing import Optional, Dict, List
@@ -27,7 +28,7 @@ from selenium.common.exceptions import (
 )
 
 MAX_PLAYLIST_SONGS = 50
-VIDEO_READY_TIMEOUT = 15
+VIDEO_READY_TIMEOUT = 20
 VIDEO_READY_POLL_INTERVAL = 0.5
 
 
@@ -44,20 +45,29 @@ class BrowserAudioStreamer:
     Each guild gets:
     - A dedicated PulseAudio null sink for audio isolation
     - A Chrome browser instance whose audio routes to that sink
+
+    Thread safety: a per-guild threading.Lock ensures only one thread
+    drives the Selenium browser at a time.
     """
 
     def __init__(self) -> None:
         self._browsers: Dict[int, webdriver.Chrome] = {}
         self._sink_modules: Dict[int, int] = {}
         self._cookies_accepted: Dict[int, bool] = {}
-        self._warmed_up: Dict[int, bool] = {}
-        self._guild_locks: Dict[int, asyncio.Lock] = {}
+        self._create_locks: Dict[int, asyncio.Lock] = {}
+        self._browser_locks: Dict[int, threading.Lock] = {}
 
-    def _get_lock(self, guild_id: int) -> asyncio.Lock:
-        """Get or create an asyncio lock for a guild."""
-        if guild_id not in self._guild_locks:
-            self._guild_locks[guild_id] = asyncio.Lock()
-        return self._guild_locks[guild_id]
+    def _get_create_lock(self, guild_id: int) -> asyncio.Lock:
+        """Get or create an asyncio lock for browser creation."""
+        if guild_id not in self._create_locks:
+            self._create_locks[guild_id] = asyncio.Lock()
+        return self._create_locks[guild_id]
+
+    def _get_browser_lock(self, guild_id: int) -> threading.Lock:
+        """Get or create a threading lock for browser operations."""
+        if guild_id not in self._browser_locks:
+            self._browser_locks[guild_id] = threading.Lock()
+        return self._browser_locks[guild_id]
 
     def _get_sink_name(self, guild_id: int) -> str:
         """Get PulseAudio sink name for a guild."""
@@ -159,11 +169,10 @@ class BrowserAudioStreamer:
         options.add_argument("--disable-popup-blocking")
         options.add_argument("--disable-infobars")
 
-        # Use system Chromium binary — check env var first, then known paths
         chrome_bin = os.environ.get("CHROME_BIN")
         if chrome_bin and os.path.exists(chrome_bin):
             options.binary_location = chrome_bin
-            _log(f"   Using Chrome binary from CHROME_BIN: {chrome_bin}")
+            _log(f"   Using Chrome binary: {chrome_bin}")
         else:
             for path in [
                 "/usr/bin/chromium",
@@ -175,7 +184,6 @@ class BrowserAudioStreamer:
                     _log(f"   Using Chrome binary: {path}")
                     break
 
-        # Route Chrome audio to the guild's PulseAudio sink
         env = os.environ.copy()
         env["PULSE_SINK"] = sink_name
 
@@ -209,13 +217,9 @@ class BrowserAudioStreamer:
     async def get_or_create_browser(
         self, guild_id: int
     ) -> Optional[webdriver.Chrome]:
-        """Get an existing browser or create a new one for the guild.
-
-        Uses a per-guild lock to prevent concurrent creation.
-        """
-        lock = self._get_lock(guild_id)
+        """Get existing browser or create new one (with creation lock)."""
+        lock = self._get_create_lock(guild_id)
         async with lock:
-            # Check again inside lock (another task may have created it)
             if guild_id in self._browsers:
                 try:
                     self._browsers[guild_id].title
@@ -233,7 +237,6 @@ class BrowserAudioStreamer:
 
             loop = asyncio.get_event_loop()
 
-            # Create PulseAudio sink if needed
             if guild_id not in self._sink_modules:
                 ok = await loop.run_in_executor(
                     None, self._setup_audio_sink, guild_id
@@ -241,7 +244,6 @@ class BrowserAudioStreamer:
                 if not ok:
                     return None
 
-            # Create browser
             return await loop.run_in_executor(
                 None, self._create_browser_sync, guild_id
             )
@@ -250,8 +252,8 @@ class BrowserAudioStreamer:
 
     async def prewarm(self, guild_id: int) -> bool:
         """
-        Prewarm a browser for a guild: create browser, accept cookies,
-        and navigate to YouTube so it's ready for instant playback.
+        Prewarm: create browser + sink + accept cookies.
+        Uses the browser lock so it won't conflict with play commands.
         """
         _log(f"🔥 Prewarming browser for guild {guild_id}...")
         start_time = time.time()
@@ -261,15 +263,12 @@ class BrowserAudioStreamer:
             _log("❌ Prewarm failed: could not create browser")
             return False
 
-        # Accept cookies and load YouTube homepage
         if not self._cookies_accepted.get(guild_id, False):
             loop = asyncio.get_event_loop()
-            _log("🍪 Prewarming: navigating to YouTube for cookies...")
             await loop.run_in_executor(
-                None, self._ensure_cookies_sync, driver, guild_id
+                None, self._prewarm_cookies_sync, guild_id
             )
 
-        self._warmed_up[guild_id] = True
         elapsed = time.time() - start_time
         _log(
             f"✅ Browser prewarmed for guild {guild_id} "
@@ -277,10 +276,23 @@ class BrowserAudioStreamer:
         )
         return True
 
+    def _prewarm_cookies_sync(self, guild_id: int) -> None:
+        """Navigate to YouTube and accept cookies (thread-safe)."""
+        lock = self._get_browser_lock(guild_id)
+        driver = self._browsers.get(guild_id)
+        if not driver:
+            return
+        with lock:
+            _log("🍪 Prewarm: navigating to YouTube for cookies...")
+            self._ensure_cookies_sync(driver, guild_id)
+            _log("🍪 Prewarm: cookies handled")
+
     # ── Cookie consent ──────────────────────────────────────────
 
     def _accept_cookies_sync(self, driver: webdriver.Chrome) -> bool:
-        """Accept YouTube cookie consent dialog (synchronous)."""
+        """Accept YouTube cookie consent dialog (synchronous).
+        Caller must hold the browser lock.
+        """
         _log("🍪 Looking for cookie consent dialog...")
         try:
             time.sleep(2)
@@ -304,7 +316,6 @@ class BrowserAudioStreamer:
                     time.sleep(1)
                     return True
 
-            # Fallback: aria-label based search
             for selector in [
                 'button[aria-label*="Accept"]',
                 'button[aria-label*="accept"]',
@@ -312,9 +323,7 @@ class BrowserAudioStreamer:
             ]:
                 els = driver.find_elements(By.CSS_SELECTOR, selector)
                 if els:
-                    _log(
-                        f"   Clicking cookie button via: {selector}"
-                    )
+                    _log(f"   Clicking cookie button via: {selector}")
                     els[0].click()
                     _log("✅ Cookie consent accepted (aria)")
                     time.sleep(1)
@@ -329,7 +338,9 @@ class BrowserAudioStreamer:
     def _ensure_cookies_sync(
         self, driver: webdriver.Chrome, guild_id: int
     ) -> None:
-        """Navigate to YouTube and handle cookies if needed (sync)."""
+        """Navigate to YouTube and handle cookies if needed.
+        Caller must hold the browser lock.
+        """
         if self._cookies_accepted.get(guild_id, False):
             _log("🍪 Cookies already accepted, skipping")
             return
@@ -344,10 +355,8 @@ class BrowserAudioStreamer:
 
     # ── Video playback ──────────────────────────────────────────
 
-    def _wait_for_video_ready(
-        self, driver: webdriver.Chrome
-    ) -> bool:
-        """Wait until video has actually started playing (has audio)."""
+    def _wait_for_video_ready(self, driver: webdriver.Chrome) -> bool:
+        """Wait until video has a source and is actually playing."""
         _log("   Waiting for video to buffer and play...")
         start = time.time()
         while time.time() - start < VIDEO_READY_TIMEOUT:
@@ -358,10 +367,20 @@ class BrowserAudioStreamer:
                     readyState: v.readyState,
                     currentTime: v.currentTime,
                     paused: v.paused,
-                    duration: isNaN(v.duration) ? null : v.duration
+                    networkState: v.networkState,
+                    duration: isNaN(v.duration) ? null : v.duration,
+                    hasSrc: !!(v.src && v.src !== '' && v.src !== 'none'
+                             && !v.src.startsWith('blob:'))
+                             || v.querySelector('source') !== null
+                             || (v.src && v.src.startsWith('blob:'))
                 };
             """)
-            if state and state.get('readyState', 0) >= 3 \
+            if not state:
+                time.sleep(VIDEO_READY_POLL_INTERVAL)
+                continue
+
+            # Video is playing: has data and time is advancing
+            if state.get('readyState', 0) >= 3 \
                     and state.get('currentTime', 0) > 0:
                 elapsed = time.time() - start
                 _log(
@@ -372,12 +391,23 @@ class BrowserAudioStreamer:
                     f"(waited {elapsed:.1f}s)"
                 )
                 return True
-            # If paused, try to play again
-            if state and state.get('paused'):
+
+            # If paused, try to play
+            if state.get('paused'):
                 driver.execute_script("""
                     const v = document.querySelector('video');
-                    if (v && v.paused) v.play().catch(() => {});
+                    if (v && v.paused) {
+                        v.muted = false;
+                        v.volume = 1.0;
+                        v.play().catch(() => {});
+                    }
                 """)
+
+            # Log progress every 3 seconds
+            elapsed = time.time() - start
+            if int(elapsed) % 3 == 0 and elapsed > 0.5:
+                _log(f"   ... still waiting ({elapsed:.0f}s): {state}")
+
             time.sleep(VIDEO_READY_POLL_INTERVAL)
 
         elapsed = time.time() - start
@@ -396,9 +426,7 @@ class BrowserAudioStreamer:
                 src: v.src ? v.src.substring(0, 100) : 'none'
             };
         """)
-        _log(
-            f"   ⚠️ Video not ready after {elapsed:.1f}s: {final}"
-        )
+        _log(f"   ⚠️ Video not ready after {elapsed:.1f}s: {final}")
         return False
 
     def _play_video_sync(
@@ -407,7 +435,20 @@ class BrowserAudioStreamer:
         guild_id: int,
         url: str,
     ) -> bool:
-        """Navigate to a YouTube video and start playback (sync)."""
+        """Navigate to a YouTube video and start playback.
+        Acquires the browser lock for thread safety.
+        """
+        lock = self._get_browser_lock(guild_id)
+        with lock:
+            return self._play_video_locked(driver, guild_id, url)
+
+    def _play_video_locked(
+        self,
+        driver: webdriver.Chrome,
+        guild_id: int,
+        url: str,
+    ) -> bool:
+        """Inner play logic (caller must hold browser lock)."""
         _log(f"▶️ Starting video playback: {url}")
         total_start = time.time()
         try:
@@ -420,18 +461,31 @@ class BrowserAudioStreamer:
             _log(f"   Page navigation took {nav_elapsed:.1f}s")
             _log(f"   Page title: {driver.title}")
 
-            # Wait for <video> element
             _log("   Waiting for <video> element...")
             wait_start = time.time()
             WebDriverWait(driver, 15).until(
                 EC.presence_of_element_located((By.TAG_NAME, "video"))
             )
-            wait_elapsed = time.time() - wait_start
-            _log(f"   <video> element found in {wait_elapsed:.1f}s")
+            _log(
+                f"   <video> element found in "
+                f"{time.time() - wait_start:.1f}s"
+            )
 
-            # Unmute and start playback
-            _log("   Setting video: muted=false, volume=1.0, play()")
+            # Wait a moment for YouTube's JS player to initialize
+            _log("   Waiting for YouTube player to initialize...")
+            time.sleep(3)
+
+            # Unmute and play via YouTube's player API
+            _log("   Triggering playback via JS...")
             driver.execute_script("""
+                // Try YouTube's player API first
+                const player = document.querySelector('#movie_player');
+                if (player && player.playVideo) {
+                    player.playVideo();
+                    player.unMute();
+                    player.setVolume(100);
+                }
+                // Also set video element directly
                 const video = document.querySelector('video');
                 if (video) {
                     video.muted = false;
@@ -440,8 +494,23 @@ class BrowserAudioStreamer:
                 }
             """)
 
-            # Try to skip YouTube ads
-            _log("   Checking for ads (2s wait)...")
+            # Also try clicking the big play button if visible
+            try:
+                play_btn = driver.find_elements(
+                    By.CSS_SELECTOR,
+                    ".ytp-large-play-button, "
+                    ".ytp-play-button[aria-label*='Play']"
+                )
+                for btn in play_btn:
+                    if btn.is_displayed():
+                        _log("   Clicking YouTube play button")
+                        btn.click()
+                        break
+            except Exception:
+                pass
+
+            # Check for and skip ads
+            _log("   Checking for ads...")
             time.sleep(2)
             try:
                 skip_btns = driver.find_elements(
@@ -450,26 +519,25 @@ class BrowserAudioStreamer:
                     ".ytp-ad-skip-button-modern, "
                     ".ytp-skip-ad-button",
                 )
-                if skip_btns:
-                    _log(
-                        f"   Found {len(skip_btns)} ad skip button(s)"
-                    )
-                    for btn in skip_btns:
-                        if btn.is_displayed():
-                            btn.click()
-                            _log("   Clicked ad skip button")
-                            time.sleep(1)
-                            break
+                for btn in skip_btns:
+                    if btn.is_displayed():
+                        btn.click()
+                        _log("   Skipped ad")
+                        time.sleep(1)
+                        break
                 else:
-                    _log("   No ad skip buttons found")
-            except Exception as e:
-                _log(
-                    f"   Ad skip check error: "
-                    f"{type(e).__name__}: {e}"
-                )
+                    _log("   No ads found")
+            except Exception:
+                pass
 
-            # Ensure playback after potential ad skip
+            # Ensure unmuted after any ad
             driver.execute_script("""
+                const player = document.querySelector('#movie_player');
+                if (player && player.playVideo) {
+                    player.playVideo();
+                    player.unMute();
+                    player.setVolume(100);
+                }
                 const video = document.querySelector('video');
                 if (video) {
                     video.muted = false;
@@ -478,11 +546,11 @@ class BrowserAudioStreamer:
                 }
             """)
 
-            # Wait for video to actually buffer and start playing
+            # Wait for video to actually start playing
             if not self._wait_for_video_ready(driver):
                 _log("⚠️ Video may not be playing, continuing anyway")
 
-            # Verify audio routing
+            # Verify PulseAudio routing
             self._verify_audio_routing(guild_id)
 
             total_elapsed = time.time() - total_start
@@ -525,7 +593,20 @@ class BrowserAudioStreamer:
         guild_id: int,
         query: str,
     ) -> Optional[Dict[str, str]]:
-        """Search YouTube and return first video result (sync)."""
+        """Search YouTube (acquires browser lock)."""
+        lock = self._get_browser_lock(guild_id)
+        with lock:
+            return self._search_youtube_locked(
+                driver, guild_id, query
+            )
+
+    def _search_youtube_locked(
+        self,
+        driver: webdriver.Chrome,
+        guild_id: int,
+        query: str,
+    ) -> Optional[Dict[str, str]]:
+        """Inner search logic (caller must hold browser lock)."""
         _log(f"🔍 Searching YouTube for: '{query}'")
         start_time = time.time()
         try:
@@ -541,7 +622,6 @@ class BrowserAudioStreamer:
             nav_elapsed = time.time() - start_time
             _log(f"   Search page loaded in {nav_elapsed:.1f}s")
 
-            # Wait for video result renderers
             _log("   Waiting for search results...")
             WebDriverWait(driver, 10).until(
                 EC.presence_of_element_located(
@@ -607,7 +687,18 @@ class BrowserAudioStreamer:
         guild_id: int,
         url: str,
     ) -> List[Dict[str, str]]:
-        """Scrape playlist entries from YouTube (synchronous)."""
+        """Scrape playlist (acquires browser lock)."""
+        lock = self._get_browser_lock(guild_id)
+        with lock:
+            return self._get_playlist_locked(driver, guild_id, url)
+
+    def _get_playlist_locked(
+        self,
+        driver: webdriver.Chrome,
+        guild_id: int,
+        url: str,
+    ) -> List[Dict[str, str]]:
+        """Inner playlist logic (caller must hold browser lock)."""
         _log(f"📋 Loading playlist: {url[:80]}")
         start_time = time.time()
         try:
@@ -802,7 +893,6 @@ class BrowserAudioStreamer:
 
         self._remove_audio_sink(guild_id)
         self._cookies_accepted.pop(guild_id, None)
-        self._warmed_up.pop(guild_id, None)
 
     async def cleanup(self, guild_id: int) -> None:
         """Clean up browser and PulseAudio sink for a guild."""
